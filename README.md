@@ -1,2 +1,4 @@
 # LatBo
-lattice boltzmann methods code
+lattice boltzmann method code for masters thesis. 
+
+INCOMPLETE
