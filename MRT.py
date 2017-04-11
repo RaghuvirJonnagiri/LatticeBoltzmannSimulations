@@ -9,8 +9,10 @@ sudo apt-get install python-vtk?
 
 from numpy import *
 import numpy as np
+import math
 #import numexpr as ne
 import matplotlib
+from math import nan
 matplotlib.use('Agg')
 from matplotlib import pyplot
 from VTKWrapper import saveToVTK
@@ -32,8 +34,8 @@ OutputFolder = './output'
 CurrentFolder = os.getcwd()
 
 # Lattice Parameters
-maxIt = 200000 # time iterations
-Re    = 3200.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
+maxIt = 2000000 # time iterations
+Re    = 1000.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
 
 #Number of cells
 xsize, ysize = 200, 200
@@ -41,17 +43,19 @@ xsize_max, ysize_max = xsize-1, ysize-1 # highest index in each direction
 q = 9 # d2Q9
 
 uLB = 0.08 # velocity in lattice units
+#since uLB is fixed if dx is changed, dt is changed proportionally i.e., acoustic scaling
+
+print('the value of uLB is ', uLB) # <0.1 for accuracy and < 0.4 stability
 nuLB = uLB*ysize/Re #viscosity coefficient
 
-
-
-
-#SRT
 omega = 2.0 / (6.*nuLB+1)
+print('the value of tau(/Dt) is ', 1/omega) # some BCs need this to be 1
+tau_check = 0.5 +(1/8.0)*uLB # minimum value for stability
+#print('If it is SRT, It should not be less than', tau_check, '. Closer to 1, better.')
 
 #TRT
 omegap = omega  
-delTRT = 1.0/12.0 
+delTRT = 1.0/3.5 # choose this based on the error that you want to focus on
 omegam = 1.0/(0.5 + ( delTRT/( (1/omegap)-0.5 )) )
 
 #MRT - relaxation time vector
@@ -59,7 +63,7 @@ omega_nu = omega # from shear viscosity
 omega_e =  1.0 # stokes hypothesis - bulk viscosity is zero
 omega_eps , omega_q = 1.0,1.2 #0.71, 0.83 # randomly chosen
 omega_vec = [0.0, omega_e, omega_eps, 0.0, omega_q, 0.0, omega_q, omega_nu, omega_nu]
-omega_vec = ones((q)); omega_vec[:] = omega
+#omega_vec = ones((q)); omega_vec[:] = omega
 omega_diag = diag(omega_vec)
 
 
@@ -84,19 +88,24 @@ velZ = zeros((xsize,ysize,1)) # velocity in Z direction is zero
 # axis for velocity plots
 YNorm = arange(ysize,0,-1,dtype='float64')/ysize # y starts as 0 from top lid
 XNorm = arange(0,xsize,1,dtype='float64')/xsize # x starts as 0 from left wall
-
-GhiaData = genfromtxt('GhiaData.csv', delimiter = ",")[6:,1:]
-
 # Ghia Data for Re 100 to Re 10000
+GhiaData = genfromtxt('GhiaData.csv', delimiter = ",")[6:23,1:]
+GhiaDataV = genfromtxt('GhiaData.csv',delimiter = ",")[25:39,2:9]
 X_GhiaHor = GhiaData[:,9]
 Y_GhiaVer = GhiaData[:,0]
 
 Re_dict = {100:1, 400:2, 1000:3, 3200:4, 5000:5, 7500:6, 10000:7} # column numbers in csv file for Re
 Ux_GhiaVer = GhiaData[:,Re_dict[Re]]
 Uy_GhiaHor = GhiaData[:,Re_dict[Re]+9]
+# Positions of vortices
+X_Vor = GhiaDataV[0:7,Re_dict[Re]-1]
+X_Vor = X_Vor[X_Vor!=0]
+Y_Vor = GhiaDataV[7:14,Re_dict[Re]-1]
+Y_Vor = Y_Vor[Y_Vor!=0]
 
 NormErr_column = []; time_column = [] # initializing arrays to track LBM and Ghia differences
-LBMy = array(Y_GhiaVer*ysize_max).astype(int) # LBM coordinates close to ghia's values
+temp = array(Y_GhiaVer*ysize_max).astype(int) # LBM coordinates close to ghia's values
+LBMy = temp[1:] #avoiding zero values at wall
 #     Ux_GhiaVertAxis = GhiaRefUx_100()
 #     Uy_GhiaVertAxis = GhiaRefUy_100()
 #     Ux_GhiaVertAxis = GhiaRefUx_400()
@@ -196,11 +205,12 @@ def equ(rho,u):
 #     feq[6, :, :] = rho*t[6]*(1. + 3.0*cu[6] + 9*0.5*cu[6]*cu[6] - 3.0*0.5*usqr)
 #     feq[7, :, :] = rho*t[7]*(1. + 3.0*cu[7] + 9*0.5*cu[7]*cu[7] - 3.0*0.5*usqr)
 #     feq[8, :, :] = rho*t[8]*(1. + 3.0*cu[8] + 9*0.5*cu[8]*cu[8] - 3.0*0.5*usqr)
-#    return feq
 # Set up
+
 LeftWall = fromfunction(lambda x,y:x==0,(xsize,ysize))
 RightWall = fromfunction(lambda x,y:x==xsize_max,(xsize,ysize))
 BottomWall = fromfunction(lambda x,y:y==ysize_max,(xsize,ysize))
+
 
 wall = logical_or(logical_or(LeftWall, RightWall), BottomWall)
 
@@ -222,14 +232,16 @@ if (SavePlot):
 
 os.chdir(OutputFolder)
 
-tmethod = ' - TRT' # options : SRT, TRT, MRT
+tmethod = ' - TRT NEBB 200*200' # options : SRT, TRT, MRT
 
 # Time Loop
 for It in range(maxIt):
     # macro density
-    ftemp = fin
+    ftemp = fin.copy()
 #     ftemp1 = fin1
-
+    rho = sumf(fin)
+    
+    
     #TRT
     #fplus = 0.5*(fin[:,:,:] + fin[bounce[:], :,:])
     #fminus = 0.5*(fin[:,:,:] - fin[bounce[:], :,:])
@@ -238,7 +250,7 @@ for It in range(maxIt):
 #     fplus[1]  = 0.5*(fin[1] + fin[3]); fplus[3] = fplus[1];fplus[0] = fin[0]
 #     fminus[TopStencil]  = 0.5*(fin[TopStencil] - fin[BotStencil]); fminus[BotStencil] = -fminus[TopStencil]
 #     fminus[1]  = 0.5*(fin[1] - fin[3]); fminus[3] = -fminus[1];fminus[0] = 0
-    
+#     
     fplus[2]  = 0.5*(fin[2] + fin[4]); fplus[4] = fplus[2]
     fplus[5]  = 0.5*(fin[5] + fin[7]); fplus[7] = fplus[5]
     fplus[6]  = 0.5*(fin[6] + fin[8]); fplus[8] = fplus[6]
@@ -250,10 +262,11 @@ for It in range(maxIt):
     
     
     #print(It)
-    rho = sumf(fin)
+
 #     rho1 = sumf(fin1)
     #u = dot(c.transpose(), fin.transpose((1,0,2)))/rho
     #peeling the loop to increase the speed
+    
     u[0,:,:] = (c[0,0]*fin[0]+c[1,0]*fin[1]+c[2,0]*fin[2]+c[3,0]*fin[3]+c[4,0]*fin[4]+c[5,0]*fin[5]+c[6,0]*fin[6]+c[7,0]*fin[7]+c[8,0]*fin[8])/rho
     u[1,:,:] = (c[0,1]*fin[0]+c[1,1]*fin[1]+c[2,1]*fin[2]+c[3,1]*fin[3]+c[4,1]*fin[4]+c[5,1]*fin[5]+c[6,1]*fin[6]+c[7,1]*fin[7]+c[8,1]*fin[8])/rho
 
@@ -261,18 +274,12 @@ for It in range(maxIt):
 #     u1[1,:,:] = (c[0,1]*fin1[0]+c[1,1]*fin1[1]+c[2,1]*fin1[2]+c[3,1]*fin1[3]+c[4,1]*fin1[4]+c[5,1]*fin1[5]+c[6,1]*fin1[6]+c[7,1]*fin1[7]+c[8,1]*fin1[8])/rho
 
 
-#     
-   #u = zeros((2,xsize,ysize))
-   #for m in range(xsize):
-        #for l in range(2):
-     #       u[l,m,:] = dot( c[:,l].transpose(), fin[:,m,:])
-           
-    
-    rho[:, 0] = sumf(ftemp[CentHStencil, :, 0])+2.*sumf(ftemp[TopStencil, :, 0])
-#     rho1[:, 0] = sumf(ftemp1[CentHStencil, :, 0])+2.*sumf(ftemp1[TopStencil, :, 0])
- #   u[:,:,0]=InitVel[:,:,0]
+
+    rho[:, 0] = sumf(fin[CentHStencil, :, 0])+2.*sumf(fin[TopStencil, :, 0])
+    #rho1[:, 0] = sumf(ftemp1[CentHStencil, :, 0])+2.*sumf(ftemp1[TopStencil, :, 0])
+    #u[:,:,0]=InitVel[:,:,0]
     u[:,0,1:]= 0 ; u[:,xsize_max,1:]= 0 ; u[:,:,ysize_max]= 0
-    u[0,10:xsize_max-10,0]=uLB ; u[1,10:xsize_max-10,0] =0 #10 chosen randomly to not force corners
+    u[0,1:xsize_max,0]=uLB ; u[1,1:xsize_max,0] =0 #10 chosen randomly to not force corners
     feq = equ(rho,u)
 #     feq1 = equ(rho1,u1)
     
@@ -305,12 +312,12 @@ for It in range(maxIt):
     feminus[5]  = 0.5*(feq[5] - feq[7]); feminus[7] = -feminus[5]
     feminus[6]  = 0.5*(feq[6] - feq[8]); feminus[8] = -feminus[6]
     feminus[1]  = 0.5*(feq[1] - feq[3]); feminus[3] = -feminus[1];feminus[0] = 0 
-    
+#     
     #Collision - MRT    
-#     m_GS = m_GS - dot(omega_diag, transpose((m_GS-m_GS_eq), (1,0,2)))
-#     fpost = dot(M_GS_INV , m_GS.transpose(1,0,2))
-#     temp = dot(omega_diag, transpose((m_GS-m_GS_eq), (1,0,2)))
-#     fpost = fin - dot(M_GS_INV , transpose(temp, (1,0,2)) ) 
+    #m_GS = m_GS - dot(omega_diag, transpose((m_GS-m_GS_eq), (1,0,2)))
+    #fpost = dot(M_GS_INV , m_GS.transpose(1,0,2))
+    #temp = dot(omega_diag, transpose((m_GS-m_GS_eq), (1,0,2)))
+    #fpost = fin - dot(M_GS_INV , transpose(temp, (1,0,2)) ) 
     
        
     #TRT
@@ -351,44 +358,47 @@ for It in range(maxIt):
 #     fin1[8, 1:xsize_max,   1:ysize_max]   = fpost1[8, 0:xsize_max-1, 0:ysize_max-1]
      
  
-    #Accounting for moving wall using zou-he condition
+
     # boundary condition at walls
     
 
-#Simple Bounceback 
-#     for value in LeftStencil: fin[value, RightWall ] = ftemp[bounce[value], RightWall] 
-#     for value in TopStencil: fin[value, BottomWall ] = ftemp[bounce[value], BottomWall]  
-#     for value in RightStencil: fin[value, LeftWall ] = ftemp[bounce[value], LeftWall]  
-
-
-
+#Simple Bounceback - half way link based - works only when tau/Dt is around 0.93
+#     for value in LeftStencil: fin[value, RightWall ] = fpost[bounce[value], RightWall] 
+#     for value in RightStencil: fin[value, LeftWall ] = fpost[bounce[value], LeftWall]  
+#     for value in TopStencil: fin[value, BottomWall ] = fpost[bounce[value], BottomWall] 
+#     # Bouzidi condition for top lid
+#     fin[4, 1:xsize_max-1,0 ] = fpost[2, 1:xsize_max-1,0] 
+#     fin[7, 1:xsize_max-1,0 ] = fpost[5, 1:xsize_max-1,0] - array(1/6.0)*uLB
+#     fin[8, 1:xsize_max-1,0 ] = fpost[6, 1:xsize_max-1,0] + array(1/6.0)*uLB
+    
 #     fin[LeftStencil, RightWall ] = ftemp[asarray( [bounce[i] for i in LeftStencil]) , RightWall]
 #     fin[TopStencil, BottomWall ] = ftemp[asarray( [bounce[i] for i in TopStencil]) , BottomWall]
 #     fin[RightStencil, LeftWall ] = ftemp[asarray( [bounce[i] for i in RightStencil]) , LeftWall]
-    
+  
+    #Accounting for moving wall using zou-he condition 
     # NEBB for walls
     
-    fin[RightStencil, 0, :] = - feq[LeftStencil, 0, :] + (feq[RightStencil, 0, :] + ftemp[LeftStencil, 0, :])
-    fin[TopStencil, :, ysize_max] = - feq[BotStencil, :, ysize_max] + (feq[TopStencil, :, ysize_max] + ftemp[BotStencil, :, ysize_max])
-    fin[LeftStencil, xsize_max, :] = - feq[RightStencil, xsize_max, :] + (feq[LeftStencil, xsize_max, :] + ftemp[RightStencil, xsize_max, :])
-    fin[BotStencil, :, 0] = - feq[TopStencil, :, 0] + (feq[BotStencil, :, 0] + ftemp[TopStencil, :, 0])
+    fin[RightStencil, 0, :] = - feq[LeftStencil, 0, :] + (feq[RightStencil, 0, :] + fin[LeftStencil, 0, :])
+    fin[LeftStencil, xsize_max, :] = - feq[RightStencil, xsize_max, :] + (feq[LeftStencil, xsize_max, :] + fin[RightStencil, xsize_max, :])
+    fin[TopStencil, :, ysize_max] = - feq[BotStencil, :, ysize_max] + (feq[TopStencil, :, ysize_max] + fin[BotStencil, :, ysize_max])
+    fin[BotStencil, :, 0] = - feq[TopStencil, :, 0] + (feq[BotStencil, :, 0] + fin[TopStencil, :, 0])
     
-#     fin1[RightStencil, 0, :] = - feq1[LeftStencil, 0, :] + (feq1[RightStencil, 0, :] + ftemp1[LeftStencil, 0, :])
-#     fin1[TopStencil, :, ysize_max] = - feq1[BotStencil, :, ysize_max] + (feq1[TopStencil, :, ysize_max] + ftemp1[BotStencil, :, ysize_max])
+  #   fin1[RightStencil, 0, :] = - feq1[LeftStencil, 0, :] + (feq1[RightStencil, 0, :] + ftemp1[LeftStencil, 0, :])
+  #   fin1[TopStencil, :, ysize_max] = - feq1[BotStencil, :, ysize_max] + (feq1[TopStencil, :, ysize_max] + ftemp1[BotStencil, :, ysize_max])
 #     fin1[LeftStencil, xsize_max, :] = - feq1[RightStencil, xsize_max, :] + (feq1[LeftStencil, xsize_max, :] + ftemp1[RightStencil, xsize_max, :])
 #     fin1[BotStencil, :, 0] = - feq1[TopStencil, :, 0] + (feq1[BotStencil, :, 0] + ftemp1[TopStencil, :, 0])
 #        
 
 #NEBB accounting for tangential velocities
-#     temp = uLB
-#     uLB = 0
-#    
-#     fin[4,:,0] = fin[2,0,:]
-#     fin[7,:,0] = fin[5,0,:] + 0.5*(fin[1,:,0] - fin[3,:,0]) - 0.5*uLB
-#     fin[8,:,0] = fin[6,0,:] - 0.5*(fin[1,:,0] - fin[3,:,0]) + 0.5*uLB
-#        
-# #     #corners - upper left and then upper right
-#  #   uLB = 0     
+    #temp = uLB
+    #uLB = 0
+     
+    fin[4,:,0] = fin[2,0,:]
+    fin[7,:,0] = fin[5,0,:] + 0.5*(fin[1,:,0] - fin[3,:,0]) - 0.5*uLB
+    fin[8,:,0] = fin[6,0,:] - 0.5*(fin[1,:,0] - fin[3,:,0]) + 0.5*uLB
+#             
+# # # #     #corners - upper left and then upper right
+# # #  #   uLB = 0     
     fin[1,0,0] = fin[3,0,0] + (2.0/3.0)*uLB
     fin[4,0,0] = fin[2,0,0] 
     fin[8,0,0] = fin[6,0,0] + (1.0/6.0)*uLB
@@ -401,14 +411,30 @@ for It in range(maxIt):
     fin[6,xsize_max,0] =  -(1.0/12.0)*uLB
     fin[8,xsize_max,0] =  +(1.0/12.0)*uLB
     fin[0,xsize_max,0] = 1.0 - sumf(fin[1:,xsize_max,0])    
-#     uLB = temp
+    #uLB = temp
      
     
     if( (It%Pinterval == 0) & (SaveVTK | SavePlot)) :
        
         print ('current iteration :', It)
-        print (mean(u[0,:,0]/uLB))
-        print (mean(u[1,0,:]/uLB))
+        print (mean(u[0,:,0])/uLB)
+        Usquare = u[0,:,:]**2 + u[1,:,:]**2
+        Usquare = Usquare/(uLB**2)
+        BCoffset = int(xsize/10)
+        # replacing all boundaries with nan to get location of vortices
+        Usquare[0:BCoffset,:] = nan ; Usquare[:,0:BCoffset] = nan
+        Usquare[xsize_max-BCoffset:xsize,:] = nan;Usquare[:,ysize_max-BCoffset:ysize] = nan
+        Loc1 = unravel_index(nanargmin(Usquare),Usquare.shape)
+        print(Loc1)
+        print(Usquare[Loc1[0], Loc1[1]])
+        # finding other vortices
+        Usquare[Loc1[0]-BCoffset:Loc1[0]+BCoffset,Loc1[1]-BCoffset:Loc1[1]+BCoffset] = nan
+        Loc2 = unravel_index(nanargmin(Usquare),Usquare.shape)
+        print(Loc2)
+        print(Usquare[Loc2[0], Loc2[1]])        
+        
+        
+        
         if (SavePlot):
             
             f.clear()
@@ -420,7 +446,6 @@ for It in range(maxIt):
             #subplot6 = pyplot.subplot2grid((2,15),(1,10), colspan=5, rowspan=1)          
             
             matplotlib.rcParams.update({'font.size': 15})
-            
             Ux = u[0,int(xsize/2),:]/uLB 
             subplot1.plot(Ux, YNorm, label="LBM")
             subplot1.plot(Ux_GhiaVer, Y_GhiaVer, 'g*' , label="Ghia")
@@ -432,27 +457,36 @@ for It in range(maxIt):
             subplot2.plot(XNorm, Uy, label="LBM")
             subplot2.plot(X_GhiaHor,Uy_GhiaHor, 'g*', label='Ghia')
             subplot2.set_title('Uy on middle row', fontsize = 20, y=1.02)
-            subplot2.legend(loc = 'center right')
+            subplot2.legend(loc = 'upper right')
             subplot2.set_xlabel('X-position', fontsize = 20);subplot2.set_ylabel('Uy', fontsize = 20)
             
             #subplot1.imshow(sqrt(u[0]**2+u[1]**2).transpose(), pyplot.set_cmap('jet') , vmin = 0, vmax = 0.02)
             color1 = (sqrt(u[0,:,:]**2+u[1,:,:]**2)/uLB ).transpose()
             strm = subplot3.streamplot(XNorm,YNorm,(u[0,:,:]).transpose(),(u[1,:,:]).transpose(), color =color1,cmap=pyplot.cm.jet)#,norm=matplotlib.colors.Normalize(vmin=0,vmax=1)) 
             cbar = pyplot.colorbar(strm.lines, ax = subplot3)
+            subplot3.plot(Loc1[0]/xsize,(ysize_max-Loc1[1])/ysize,'ro', label='Vortex1')
+            subplot3.plot(Loc2[0]/xsize,(ysize_max-Loc2[1])/ysize,'mo', label='Vortex2')
+            subplot3.plot(X_Vor, Y_Vor,'ks')
             subplot3.set_title('Velocity Streamlines - LBM', fontsize = 20, y =1.02)
             subplot3.margins(0.005) #subplot3.axis('tight')
             subplot3.set_xlabel('X-position', fontsize = 20);subplot3.set_ylabel('Y-position', fontsize = 20)
             
             #print((YNorm == array(Y_GhiaVer*ysize_max).astype(int)))
             Ux_temp = u[0,int(xsize/2),LBMy]/uLB
-            NormErr_column.append(1 - sumf(square(fliplr(atleast_2d(Ux_GhiaVer))[0] - Ux_temp))/(len(Ux_GhiaVer)*var(Ux_GhiaVer)) ) #rsquare estimate
-            
+            temp = abs( ( abs(Ux_GhiaVer[:-1]) - abs(fliplr(atleast_2d(Ux_temp))[0])) / ( len(Ux_temp)*maximum(abs(Ux_GhiaVer[:-1]),abs(fliplr(atleast_2d(Ux_temp))[0]) )) )  #rsquare estimate
+            NormErr_column.append(1-sumf(temp))
+            #print ((1 - sumf(abs(fliplr(atleast_2d(Ux_GhiaVer[:-1]))[0] - Ux_temp)/(len(Ux_temp)*abs(Ux_GhiaVer[:-1])) )))
+            #print(NormErr_column)
+            #NormErr_column.append(1 - sumf(square(fliplr(atleast_2d(Ux_GhiaVer[:-1]))[0] - Ux_temp))/(len(Ux_temp)*var(Ux_GhiaVer[:-1])) ) #rsquare estimate
+            #NormErr_column.append(1 - (1/len(LBMy))*sumf( square( (fliplr(atleast_2d(Ux_GhiaVer[:-1]))[0] - Ux_temp)/(Ux_GhiaVer[:-1])) )  ) #rsquare estimate
+            #NormErr_column.append(abs(1 - math.log10((1/len(LBMy))*sumf( square( (fliplr(atleast_2d(Ux_GhiaVer[:-1]))[0] - Ux_temp)/(Ux_GhiaVer[:-1])) ))  )) #rsquare estimate
+
             #NormErr_column.append(1 - sumf(square(fliplr(atleast_2d(Ux_GhiaVer))[0] - Ux_temp))/sumf(square(Ux_GhiaVer)) ) #rsquare estimate
 
             time_column.append(It)
             subplot4.plot(time_column,NormErr_column,)
-            subplot4.set_title('Normalized difference between LBM and Ghia Data')  
-            subplot4.set_xlabel('time iteration', fontsize = 20);subplot4.set_ylabel('Normalized difference', fontsize = 20)
+            subplot4.set_title('Regression value - Ux_MiddleColumn' )  
+            subplot4.set_xlabel('time iteration', fontsize = 20);subplot4.set_ylabel('Regression value', fontsize = 20)
 
             f.suptitle('Lid Driven Cavity - Re' + str(int(Re)) + tmethod, fontsize = 30, y =1.04)
             pyplot.savefig(project + "_" + str(int(It/Pinterval)).zfill(5) + ".png",bbox_inches = 'tight', pad_inches = 0.4)
