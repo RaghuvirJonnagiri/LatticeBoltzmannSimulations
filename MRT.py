@@ -7,7 +7,7 @@ sudo apt-get install python-vtk?
 '''
 #@profile
 
-from numpy import *
+import numpy as np
 #import numpy as np
 import math
 import numexpr as ne
@@ -18,13 +18,16 @@ from matplotlib import pyplot
 #from VTKWrapper import saveToVTK
 import os
 from timeit import default_timer as timer
-from numba import jit
+import numba as nmb
+from functools import lru_cache as cache
+
+
 tstart = timer()
 
 #os.system("taskset -p 0xff %d" % os.getpid())
 
-print('number of cores detected is '); print(ne.detect_number_of_threads())
-ne.set_num_threads(ne.detect_number_of_threads())
+# print('number of cores detected is '); print(ne.detect_number_of_threads())
+#ne.set_num_threads(ne.detect_number_of_threads())
 
 # Plot Settings
 Pinterval = 1000# iterations to print next output
@@ -50,9 +53,9 @@ print('the value of uLB is ', uLB) # <0.1 for accuracy and < 0.4 stability
 nuLB = uLB*ysize/Re #viscosity coefficient
 
 omega = 2.0 / (6.*nuLB+1)
-tauS = ones((xsize,ysize)) # relaxation times for turbulent flows - SGS
+tauS = np.empty((xsize,ysize)) # relaxation times for turbulent flows - SGS
 tauS[:,:] = 1.0/omega
-tau = ones((xsize,ysize)) 
+tau = np.empty((xsize,ysize)) 
 tau[:,:] = 1.0/omega
 print('the value of tau(/Dt) is ', 1/omega) # some BCs need this to be 1
 tau_check = 0.5 +(1/8.0)*uLB # minimum value for stability
@@ -69,7 +72,7 @@ omega_e =  1.0 # stokes hypothesis - bulk viscosity is zero
 omega_eps , omega_q = 1.0,1.2 #0.71, 0.83 # randomly chosen
 omega_vec = [0.0, omega_e, omega_eps, 0.0, omega_q, 0.0, omega_q, omega_nu, omega_nu]
 #omega_vec = ones((q)); omega_vec[:] = omega
-omega_diag = diag(omega_vec)
+omega_diag = np.diag(omega_vec)
 
 print('omega omegap omegam omega_nu omega_e omega_eps omega_q') # For reference
 print(omega, omegap, omegam, omega_nu, omega_e, omega_eps, omega_q)
@@ -85,21 +88,21 @@ if not os.path.isdir(OutputFolder):
         pass
 
 #Grid Setup
-Xgrid = arange(0,xsize,dtype='float64')
-Ygrid = arange(0,ysize,dtype='float64')
-Zgrid = arange(0, 1,dtype='float64')
+Xgrid = np.arange(0,xsize,dtype='float64')
+Ygrid = np.arange(0,ysize,dtype='float64')
+Zgrid = np.arange(0, 1,dtype='float64')
 grid = Xgrid, Ygrid, Zgrid
 
-Xcoord = array([Xgrid,]*ysize).transpose() #row number corresponds to x value
-Ycoord = array([Ygrid,]*xsize) #column number corresponds to y value
-velZ = zeros((xsize,ysize,1)) # velocity in Z direction is zero
+Xcoord = np.array([Xgrid,]*ysize).transpose() #row number corresponds to x value
+Ycoord = np.array([Ygrid,]*xsize) #column number corresponds to y value
+velZ = np.zeros((xsize,ysize,1)) # velocity in Z direction is zero
 
 # axis for velocity plots
-YNorm = arange(ysize,0,-1,dtype='float64')/ysize # y starts as 0 from top lid
-XNorm = arange(0,xsize,1,dtype='float64')/xsize # x starts as 0 from left wall
+YNorm = np.arange(ysize,0,-1,dtype='float64')/ysize # y starts as 0 from top lid
+XNorm = np.arange(0,xsize,1,dtype='float64')/xsize # x starts as 0 from left wall
 # Ghia Data for Re 100 to Re 10000
-GhiaData = genfromtxt('GhiaData.csv', delimiter = ",")[6:23,1:]
-GhiaDataV = genfromtxt('GhiaData.csv',delimiter = ",")[25:39,2:9]
+GhiaData = np.genfromtxt('GhiaData.csv', delimiter = ",")[6:23,1:]
+GhiaDataV = np.genfromtxt('GhiaData.csv',delimiter = ",")[25:39,2:9]
 X_GhiaHor = GhiaData[:,9]
 Y_GhiaVer = GhiaData[:,0]
 
@@ -113,7 +116,7 @@ Y_Vor = GhiaDataV[7:14,Re_dict[Re]-1]
 Y_Vor = Y_Vor[Y_Vor!=0]
 
 NormErr_column = []; time_column = [] # initializing arrays to track LBM and Ghia differences
-temp = array(Y_GhiaVer*ysize_max).astype(int) # LBM coordinates close to ghia's values
+temp = np.array(Y_GhiaVer*ysize_max).astype(int) # LBM coordinates close to ghia's values
 LBMy = temp[1:] #avoiding zero values at wall
 #     Ux_GhiaVertAxis = GhiaRefUx_100()
 #     Uy_GhiaVertAxis = GhiaRefUy_100()
@@ -132,25 +135,32 @@ LBMy = temp[1:] #avoiding zero values at wall
 
 
 # Lattice Constants
-c = array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [-1, -1], [1, -1]])
+c = np.array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [-1, -1], [1, -1]])
+cx = np.array([0,1,0,-1,0,1,-1,-1,1])
+cy = np.array([0,0,1,0,-1,1,1,-1,-1])
+cxb = cx.reshape(9,1,1)
+cyb = cy.reshape(9,1,1)
 # Lattice Weights
-t = 1.0/36. * ones(q)
+t = 1.0/36. * np.ones(q)
 t[1:5] = 1.0/9.0
 t[0] = 4.0/9.0 
+
+
+tb = t.reshape(9,1,1) # reshaping for broadcasting 
 
 # reverse index for bounceback condition
 bounce = [0,3,4,1,2,7,8,5,6]
 
 #indexed arrays for stencil sides
-LeftStencil   = arange(q)[asarray([temp[0] <  0 for temp in c])]
-CentVStencil  = arange(q)[asarray([temp[0] == 0 for temp in c])]
-RightStencil  = arange(q)[asarray([temp[0] >  0 for temp in c])]
-TopStencil    = arange(q)[asarray([temp[1] >  0 for temp in c])]
-CentHStencil  = arange(q)[asarray([temp[1] == 0 for temp in c])]
-BotStencil    = arange(q)[asarray([temp[1] <  0 for temp in c])]
+LeftStencil   = np.arange(q)[np.asarray([temp[0] <  0 for temp in c])]
+CentVStencil  = np.arange(q)[np.asarray([temp[0] == 0 for temp in c])]
+RightStencil  = np.arange(q)[np.asarray([temp[0] >  0 for temp in c])]
+TopStencil    = np.arange(q)[np.asarray([temp[1] >  0 for temp in c])]
+CentHStencil  = np.arange(q)[np.asarray([temp[1] == 0 for temp in c])]
+BotStencil    = np.arange(q)[np.asarray([temp[1] <  0 for temp in c])]
 
 #MRT GRAM SCHMIDT VELOCITY MATRIX
-M_GS = ones((9,9))
+M_GS = np.ones((9,9))
 M_GS[0,:] = [1, 1, 1, 1, 1, 1, 1, 1, 1]
 M_GS[1,:] = [-4, -1, -1, -1, -1, 2, 2, 2, 2]
 M_GS[2,:] = [4, -2, -2, -2, -2, 1, 1, 1, 1]
@@ -161,7 +171,7 @@ M_GS[6,:] = [0, 0, -2, 0, 2, 1, 1, -1, -1]
 M_GS[7,:] = [0, 1, -1, 1, -1, 0, 0, 0, 0]
 M_GS[8,:] = [0, 0, 0, 0, 0, 1, -1, 1, -1]
 #MRT GS VEL MATRIX INVERSE
-M_GS_INV = ones((9,9))
+M_GS_INV = np.ones((9,9))
 M_GS_INV[0,:] = [1.0/9, -1.0/9, 1.0/9, 0, 0, 0, 0, 0, 0]
 M_GS_INV[1,:] = [1.0/9, -1.0/36, -1.0/18, 1.0/6, -1.0/6, 0, 0, 1.0/4, 0]
 M_GS_INV[2,:] = [1.0/9, -1.0/36, -1.0/18, 0, 0, 1.0/6, -1.0/6, -1.0/4, 0]
@@ -173,21 +183,32 @@ M_GS_INV[7,:] = [1.0/9, 1.0/18, 1.0/36, -1.0/6, -1.0/12, -1.0/6, -1.0/12, 0, 1.0
 M_GS_INV[8,:] = [1.0/9, 1.0/18, 1.0/36, 1.0/6, 1.0/12, -1.0/6, -1.0/12, 0, -1.0/4]
 
 #compute density
-#@jit
+#@nmb.jit('double[:,:](double[:,:,:])')
 def sumf(fin):
-    return sum(fin, axis =0)
+    return np.sum(fin, axis =0)
     #return ne.evaluate('sum(fin, axis =0)') # using numexpr for multithreading
 #compute equilibrium distribution
 
-cu = zeros((q,xsize,ysize))
-u = zeros((2,xsize,ysize))
-u1 = zeros((2,xsize,ysize))
-fplus = zeros((q,xsize,ysize))
-fminus = zeros((q,xsize,ysize))
-feplus = zeros((q,xsize,ysize))
-feminus = zeros((q,xsize,ysize))
+cu = np.empty((q,xsize,ysize))
+u = np.empty((2,xsize,ysize))
+u1 = np.empty((2,xsize,ysize))
+fplus =np.empty((q,xsize,ysize))
+fminus = np.empty((q,xsize,ysize))
+feplus = np.empty((q,xsize,ysize))
+feminus = np.empty((q,xsize,ysize))
+ftemp = np.empty((q,xsize,ysize))
+fin = np.empty((q,xsize,ysize))
+fin1 = np.empty((q,xsize,ysize))
+fpost = np.empty((q,xsize,ysize))
 
-@jit
+
+rho = np.ones((xsize,ysize))
+rhob = rho[np.newaxis,:,:]
+usqr = np.empty((xsize,ysize))
+usqrb = np.empty((q,xsize,ysize))
+
+#@nmb.jit(nmb.f8[:,:,:](nmb.f8[:,:], nmb.f8[:,:,:]))
+#@cache(maxsize=None)
 def equ(rho,u):
     #cu   = dot(c, u.transpose(1, 0, 2))
     # peeling loop to increase speed
@@ -202,11 +223,20 @@ def equ(rho,u):
     cu[8] = (c[8,0]*u[0] + c[8,1]*u[1])
        
     usqr = (u[0]*u[0]+u[1]*u[1])
-    #usqr=ne.evaluate('sum(u**2,0)')
-    feq = zeros((q, xsize, ysize))
-    for i in range(q):
-        feq[i, :, :] = rho*t[i]*(1. + 3.0*cu[i] + 9*0.5*cu[i]*cu[i] - 3.0*0.5*usqr)
+
+    feq = np.empty((q, xsize, ysize))
+#     for i in range(q):
+#         feq[i, :, :] = rho*t[i]*(1. + 3.0*cu[i] + 9*0.5*cu[i]*cu[i] - 3.0*0.5*usqr)
+#     return feq
+
+    
+    rhob = rho[np.newaxis,:,:]
+    usqrb = usqr[np.newaxis,:,:]
+    feq = ne.evaluate('rhob*tb*( 1.0 + 3.0*cu + 4.5*cu*cu - 1.5*usqrb)')
     return feq
+#     print(np.mean(feq))
+    
+
 #     feq[0, :, :] = rho*t[0]*(1. + 3.0*cu[0] + 9*0.5*cu[0]*cu[0] - 3.0*0.5*usqr)
 #     feq[1, :, :] = rho*t[1]*(1. + 3.0*cu[1] + 9*0.5*cu[1]*cu[1] - 3.0*0.5*usqr)
 #     feq[2, :, :] = rho*t[2]*(1. + 3.0*cu[2] + 9*0.5*cu[2]*cu[2] - 3.0*0.5*usqr)
@@ -218,23 +248,23 @@ def equ(rho,u):
 #     feq[8, :, :] = rho*t[8]*(1. + 3.0*cu[8] + 9*0.5*cu[8]*cu[8] - 3.0*0.5*usqr)
 # Set up
 
-LeftWall = fromfunction(lambda x,y:x==0,(xsize,ysize))
-RightWall = fromfunction(lambda x,y:x==xsize_max,(xsize,ysize))
-BottomWall = fromfunction(lambda x,y:y==ysize_max,(xsize,ysize))
+LeftWall = np.fromfunction(lambda x,y:x==0,(xsize,ysize))
+RightWall = np.fromfunction(lambda x,y:x==xsize_max,(xsize,ysize))
+BottomWall = np.fromfunction(lambda x,y:y==ysize_max,(xsize,ysize))
 
 
-wall = logical_or(logical_or(LeftWall, RightWall), BottomWall)
+wall = np.logical_or(np.logical_or(LeftWall, RightWall), BottomWall)
 
 # velocity initial/boundary conditions
-InitVel = zeros((2,xsize,ysize))
+InitVel = np.zeros((2,xsize,ysize))
 InitVel[0,:,0] = uLB
 
 # initial distributions
-feq = equ(1.0, InitVel)
+feq = equ(rho, InitVel)
 
-fin = feq.copy()
-fin1 = feq.copy()
-fpost = feq.copy()
+np.copyto(fin,feq)
+np.copyto(fin1,feq)
+np.copyto(fpost,feq)
 
 # interactive figure mode
 if (SavePlot):
@@ -251,9 +281,9 @@ BC = 'EB-NEBB ' # options : BB(half way link based), NEBB (wet node)
 # Time Loop
 for It in range(maxIt):
     # macro density
-    ftemp = fin.copy()
+    np.copyto(ftemp,fin)
 #     ftemp1 = fin1
-    rho = sumf(fin)
+    rho = np.sum(fin,axis=0)
     
     
     #TRT
@@ -278,11 +308,20 @@ for It in range(maxIt):
     #print(It)
 
 #     rho1 = sumf(fin1)
-    #u = dot(c.transpose(), fin.transpose((1,0,2)))/rho
+    #u = np.dot(c.transpose(), fin.transpose((1,0,2)))/rho
     #peeling the loop to increase the speed
-    
-    u[0,:,:] = (c[0,0]*fin[0]+c[1,0]*fin[1]+c[2,0]*fin[2]+c[3,0]*fin[3]+c[4,0]*fin[4]+c[5,0]*fin[5]+c[6,0]*fin[6]+c[7,0]*fin[7]+c[8,0]*fin[8])/rho
-    u[1,:,:] = (c[0,1]*fin[0]+c[1,1]*fin[1]+c[2,1]*fin[2]+c[3,1]*fin[3]+c[4,1]*fin[4]+c[5,1]*fin[5]+c[6,1]*fin[6]+c[7,1]*fin[7]+c[8,1]*fin[8])/rho
+
+    u[0] = (c[0,0]*fin[0]+c[1,0]*fin[1]+c[2,0]*fin[2]+c[3,0]*fin[3]+c[4,0]*fin[4]+c[5,0]*fin[5]+c[6,0]*fin[6]+c[7,0]*fin[7]+c[8,0]*fin[8])/rho
+    u[1] = (c[0,1]*fin[0]+c[1,1]*fin[1]+c[2,1]*fin[2]+c[3,1]*fin[3]+c[4,1]*fin[4]+c[5,1]*fin[5]+c[6,1]*fin[6]+c[7,1]*fin[7]+c[8,1]*fin[8])/rho
+
+  
+#     u[0] = np.sum(cxb*fin/rho,axis=0)
+#     u[1] = np.sum(cyb*fin/rho,axis=0)
+#     
+#     rhob = rho[np.newaxis,:,:]
+#     u[0] = ne.evaluate('sum(cxb*fin/rhob,axis=0)')
+#     u[1] = ne.evaluate('sum(cyb*fin/rhob,axis=0)')  
+
 
 #     u1[0,:,:] = (c[0,0]*fin1[0]+c[1,0]*fin1[1]+c[2,0]*fin1[2]+c[3,0]*fin1[3]+c[4,0]*fin1[4]+c[5,0]*fin1[5]+c[6,0]*fin1[6]+c[7,0]*fin1[7]+c[8,0]*fin1[8])/rho
 #     u1[1,:,:] = (c[0,1]*fin1[0]+c[1,1]*fin1[1]+c[2,1]*fin1[2]+c[3,1]*fin1[3]+c[4,1]*fin1[4]+c[5,1]*fin1[5]+c[6,1]*fin1[6]+c[7,1]*fin1[7]+c[8,1]*fin1[8])/rho
@@ -296,14 +335,14 @@ for It in range(maxIt):
     u[:,0,1:]= 0 ; u[:,xsize_max,1:]= 0 ; u[:,:,ysize_max]= 0
     u[0,:,0]=uLB ; u[1,:,0] =0 #10 chosen randomly to not force corners
 #     
-    
+
     feq = equ(rho,u)
 #     feq1 = equ(rho1,u1)
     
     #MRT
-#     m_GS = dot(M_GS,fin.transpose(1,0,2))  # warning : m_GS is not same as M_GS
+#     m_GS = np.dot(M_GS,fin.transpose(1,0,2))  # warning : m_GS is not same as M_GS
 #     jx = m_GS[3]; jy = m_GS[5]
-#     m_GS_eq = m_GS.copy() # initiating m_GS equilibrium
+#     np.copyto(m_GS_eq,m_GS)# initiating m_GS equilibrium
 #     jx = m_GS[3]; jy = m_GS[5] 
 #     m_GS_eq[0,:,:] = rho
 #     m_GS_eq[1,:,:] = -2.0*rho + 3.0*(jx*jx + jy*jy)

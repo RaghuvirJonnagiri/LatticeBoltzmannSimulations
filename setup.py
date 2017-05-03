@@ -1,17 +1,19 @@
 from distutils.core import setup
-from distutils.extension import Extension
 from Cython.Build import cythonize
+from distutils.extension import Extension
+from Cython.Distutils import build_ext
 
-ext_modules = [
-    Extension(
-        "functions",
-        ["functions.pyx"],
-        extra_compile_args=['-fopenmp'],
-        extra_link_args=['-fopenmp'],
-    )
+ext_modules=[
+    Extension("functions",
+              ["functions.pyx"],
+              libraries=["m"],
+              extra_compile_args = ["-O3", "-ffast-math", "-march=native", "-fopenmp" ],
+              extra_link_args=['-fopenmp']
+              ) 
 ]
 
-setup(
-    name='hello-parallel-world',
-    ext_modules=cythonize(ext_modules),
+setup( 
+  name = "functions",
+  cmdclass = {"build_ext": build_ext},
+  ext_modules = ext_modules
 )
