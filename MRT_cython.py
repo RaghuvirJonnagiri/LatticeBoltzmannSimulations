@@ -20,7 +20,8 @@ from matplotlib import pyplot
 import os
 from timeit import default_timer as timer
 #from numba import jit
-from functions import sumf, equ, ucprod 
+from functions import sumf, equ, ucprod, copyfunc, allfunc
+from functions import set_omega
 from concurrent.futures import ThreadPoolExecutor
 tstart = timer()
 from numpy import *
@@ -39,10 +40,10 @@ CurrentFolder = os.getcwd()
 
 # Lattice Parameters
 maxIt = 3000 # time iterations
-Re    = 10000.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
+Re    = 1000.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
 
 #Number of cells
-xsize, ysize = 200, 200
+xsize, ysize = 400, 400
 xsize_max, ysize_max = xsize-1, ysize-1 # highest index in each direction
 q = 9 # d2Q9
 
@@ -188,6 +189,8 @@ feminus = np.empty((q,xsize,ysize))
 ftemp = np.empty((q,xsize,ysize))
 fin = np.empty((q,xsize,ysize))
 fin1 = np.empty((q,xsize,ysize))
+feq1 = np.empty((q,xsize,ysize))
+rho1 = np.empty((xsize,ysize))
 fpost = np.empty((q,xsize,ysize))
 
 # Set up
@@ -209,7 +212,10 @@ feq = equ(np.ones((xsize,ysize))*1.0, InitVel[0],InitVel[1])
 np.copyto(fin,feq)
 np.copyto(fin1,feq)
 np.copyto(fpost,feq)
-
+np.copyto(feq1,feq)
+rho = np.sum(fin,axis=0)
+np.copyto(rho1,rho)
+np.copyto(rho1,rho)
 # interactive figure mode
 if (SavePlot):
     pyplot.ioff()
@@ -222,222 +228,231 @@ regime = 'Laminar' #options : Laminar, Turbulent
 tmethod = 'SRT' # options : SRT, TRT, MRT
 BC = 'EB-NEBB ' # options : BB(half way link based), NEBB (wet node)
 
+
+set_omega(uLB, Re, ysize) # set omega in functions file
+
 # Time Loop
 
 for It in range(maxIt):
     # macro density
-    np.copyto(ftemp,fin)
-#     ftemp1 = fin1
-    rho = sumf(fin)
-    
-    
-    #TRT
-    #fplus = 0.5*(fin[:,:,:] + fin[bounce[:], :,:])
-    #fminus = 0.5*(fin[:,:,:] - fin[bounce[:], :,:])
-    #simplifying to increase speed
-#     fplus[TopStencil]  = 0.5*(fin[TopStencil] + fin[BotStencil]); fplus[BotStencil] = fplus[TopStencil]
-#     fplus[1]  = 0.5*(fin[1] + fin[3]); fplus[3] = fplus[1];fplus[0] = fin[0]
-#     fminus[TopStencil]  = 0.5*(fin[TopStencil] - fin[BotStencil]); fminus[BotStencil] = -fminus[TopStencil]
-#     fminus[1]  = 0.5*(fin[1] - fin[3]); fminus[3] = -fminus[1];fminus[0] = 0
-#     
-#     fplus[2]  = 0.5*(fin[2] + fin[4]); fplus[4] = fplus[2]
-#     fplus[5]  = 0.5*(fin[5] + fin[7]); fplus[7] = fplus[5]
-#     fplus[6]  = 0.5*(fin[6] + fin[8]); fplus[8] = fplus[6]
-#     fplus[1]  = 0.5*(fin[1] + fin[3]); fplus[3] = fplus[1];fplus[0] = fin[0]
-#     fminus[2]  = 0.5*(fin[2] - fin[4]); fminus[4] = -fminus[2]
-#     fminus[5]  = 0.5*(fin[5] - fin[7]); fminus[7] = -fminus[5]
-#     fminus[6]  = 0.5*(fin[6] - fin[8]); fminus[8] = -fminus[6]
-#     fminus[1]  = 0.5*(fin[1] - fin[3]); fminus[3] = -fminus[1];fminus[0] = 0  
-    
-    
-    #print(It)
-
-#     rho1 = sumf(fin1)
-    #u = dot(c.transpose(), fin.transpose((1,0,2)))/rho
-    #peeling the loop to increase the speed
-    
-#     u[0] = (c[0,0]*fin[0]+c[1,0]*fin[1]+c[2,0]*fin[2]+c[3,0]*fin[3]+c[4,0]*fin[4]+c[5,0]*fin[5]+c[6,0]*fin[6]+c[7,0]*fin[7]+c[8,0]*fin[8])/rho
-#     u[1] = (c[0,1]*fin[0]+c[1,1]*fin[1]+c[2,1]*fin[2]+c[3,1]*fin[3]+c[4,1]*fin[4]+c[5,1]*fin[5]+c[6,1]*fin[6]+c[7,1]*fin[7]+c[8,1]*fin[8])/rho
-
-    u = ucprod(c,fin,rho)
-
-#     u1[0,:,:] = (c[0,0]*fin1[0]+c[1,0]*fin1[1]+c[2,0]*fin1[2]+c[3,0]*fin1[3]+c[4,0]*fin1[4]+c[5,0]*fin1[5]+c[6,0]*fin1[6]+c[7,0]*fin1[7]+c[8,0]*fin1[8])/rho
-#     u1[1,:,:] = (c[0,1]*fin1[0]+c[1,1]*fin1[1]+c[2,1]*fin1[2]+c[3,1]*fin1[3]+c[4,1]*fin1[4]+c[5,1]*fin1[5]+c[6,1]*fin1[6]+c[7,1]*fin1[7]+c[8,1]*fin1[8])/rho
-
-
-# 
-    rho[:, 0] = np.sum(fin[CentHStencil, :, 0],axis=0)+2.*np.sum(fin[TopStencil, :, 0],axis=0)
-#     #rho1[:, 0] = sumf(ftemp1[CentHStencil, :, 0])+2.*sumf(ftemp1[TopStencil, :, 0])
-#     #u[:,:,0]=InitVel[:,:,0]
-#     
-    u[:,0,1:]= 0 ; u[:,xsize_max,1:]= 0 ; u[:,:,ysize_max]= 0
-    u[0,:,0]=uLB ; u[1,:,0] =0 #10 chosen randomly to not force corners
-#     
-    
-    #feq = equ(rho,u)
-#     splits=1
-#     with ThreadPoolExecutor(max_workers=splits) as exe1:
-#         sections1 = array_split(rho,splits,axis=0)
-#         sections2 = array_split(u[0],splits,axis=0)
-#         sections3 = array_split(u[1],splits,axis=0)
-#         jobs = [exe1.submit(equ,m,n,o) for m,n,o in zip(sections1,sections2,sections3)]
-#     feq = concatenate(asarray([job.result() for job in jobs]),axis=1)
-    feq = equ(rho,u[0],u[1])
-#     feq1 = equ(rho1,u1)
-    
-    #MRT
-#     m_GS = dot(M_GS,fin.transpose(1,0,2))  # warning : m_GS is not same as M_GS
-#     jx = m_GS[3]; jy = m_GS[5]
-#     np.copyto(m_GS_eq,m_GS)# initiating m_GS equilibrium
-#     jx = m_GS[3]; jy = m_GS[5] 
-#     m_GS_eq[0,:,:] = rho
-#     m_GS_eq[1,:,:] = -2.0*rho + 3.0*(jx*jx + jy*jy)
-#     m_GS_eq[2,:,:] =  - 3.0*(jx*jx + jy*jy) + rho + 9*(jx*jx*jy*jy )
-#     m_GS_eq[4,:,:] = - jx + 3.0*(jx**3)
-#     m_GS_eq[6,:,:] = - jy + 3.0*(jy**3)
-#     m_GS_eq[7,:,:] = jx*jx - jy*jy
-#     m_GS_eq[8,:,:] = jx*jy
-    #TRT    
-    #feplus = 0.5*(feq[:,:,:] + feq[bounce[:], :,:])
-    #feminus = 0.5*(feq[:,:,:] - feq[bounce[:], :,:])
-    #simplifying to increase speed
-#     feplus[TopStencil]  = 0.5*(feq[TopStencil] + feq[BotStencil]); feplus[BotStencil] = feplus[TopStencil]
-#     feplus[1]  = 0.5*(feq[1] + feq[3]); feplus[3] = feplus[1];feplus[0] = feq[0]
-#     feminus[TopStencil]  = 0.5*(feq[TopStencil] - feq[BotStencil]); feminus[BotStencil] = -feminus[TopStencil]
-#     feminus[1]  = 0.5*(feq[1] - feq[3]); feminus[3] = -feminus[1];feminus[0] = 0    
-   
-#     feplus[2]  = 0.5*(feq[2] + feq[4]); feplus[4] = feplus[2]
-#     feplus[5]  = 0.5*(feq[5] + feq[7]); feplus[7] = feplus[5]
-#     feplus[6]  = 0.5*(feq[6] + feq[8]); feplus[8] = feplus[6]
-#     feplus[1]  = 0.5*(feq[1] + feq[3]); feplus[3] = feplus[1];feplus[0] = feq[0]
-#     feminus[2]  = 0.5*(feq[2] - feq[4]); feminus[4] = -feminus[2]
-#     feminus[5]  = 0.5*(feq[5] - feq[7]); feminus[7] = -feminus[5]
-#     feminus[6]  = 0.5*(feq[6] - feq[8]); feminus[8] = -feminus[6]
-#     feminus[1]  = 0.5*(feq[1] - feq[3]); feminus[3] = -feminus[1];feminus[0] = 0 
-#     
-    #Collision - MRT    
-#     m_GS = m_GS - dot(omega_diag, transpose((m_GS-m_GS_eq), (1,0,2)))
-#     fpost = dot(M_GS_INV , m_GS.transpose(1,0,2))
-    #temp = dot(omega_diag, transpose((m_GS-m_GS_eq), (1,0,2)))
-    #fpost = fin - dot(M_GS_INV , transpose(temp, (1,0,2)) ) 
-    
-       
-    #TRT
-    #Collision - TRT
-#     omegaS = 1.0/tauS
-#     fpost = fin - omegaS*(fplus-feplus) - omegam*( fminus-feminus)
-    #fpost = fin - omegap*(fplus-feplus) - omegam*( fminus-feminus)
-   
-    #Collision - SRT
-    #omegaS= 1.0/tauS
-    #fpost = fin - omegaS*(fin-feq)
-    #fpost = ne.evaluate('fin - omegaS*(fin-feq)')
-    #fpost = fin - omega*( fin-feq)
-    
-    fpost = ne.evaluate('fin - omega*( fin-feq)')     
-    
-
-
-    #print(mean(fpost))
-
-    #streaming
-    
-    fin[0, :, :] = fpost[0, :, :]
-    
-    fin[1, 1:xsize_max,   :]     = fpost[1, 0:xsize_max-1,  :]
-    fin[2,   :,   0:ysize_max-1] = fpost[2,   :,    1:ysize_max]
-    fin[3, 0:xsize_max-1, :]     = fpost[3, 1:xsize_max,    :]
-    fin[4,   :,   1:ysize_max]   = fpost[4,   :,    0:ysize_max-1]
-
-    fin[5, 1:xsize_max,   0:ysize_max-1] = fpost[5, 0:xsize_max-1, 1:ysize_max]
-    fin[6, 0:xsize_max-1, 0:ysize_max-1] = fpost[6, 1:xsize_max,   1:ysize_max]
-    fin[7, 0:xsize_max-1, 1:ysize_max]   = fpost[7, 1:xsize_max,   0:ysize_max-1]
-    fin[8, 1:xsize_max,   1:ysize_max]   = fpost[8, 0:xsize_max-1, 0:ysize_max-1]
-    
-#     fin1[0, :, :] = fpost1[0, :, :]
-#      
-#     fin1[1, 1:xsize_max,   :]     = fpost1[1, 0:xsize_max-1,  :]
-#     fin1[2,   :,   0:ysize_max-1] = fpost1[2,   :,    1:ysize_max]
-#     fin1[3, 0:xsize_max-1, :]     = fpost1[3, 1:xsize_max,    :]
-#     fin1[4,   :,   1:ysize_max]   = fpost1[4,   :,    0:ysize_max-1]
-#  
-#     fin1[5, 1:xsize_max,   0:ysize_max-1] = fpost1[5, 0:xsize_max-1, 1:ysize_max]
-#     fin1[6, 0:xsize_max-1, 0:ysize_max-1] = fpost1[6, 1:xsize_max,   1:ysize_max]
-#     fin1[7, 0:xsize_max-1, 1:ysize_max]   = fpost1[7, 1:xsize_max,   0:ysize_max-1]
-#     fin1[8, 1:xsize_max,   1:ysize_max]   = fpost1[8, 0:xsize_max-1, 0:ysize_max-1]
-     
- 
-
-    # boundary condition at walls
-    
-
-#Simple Bounceback - half way link based - works only when tau/Dt is around 0.93
-#     for value in LeftStencil: fin[value, RightWall ] = fpost[bounce[value], RightWall] 
-#     for value in RightStencil: fin[value, LeftWall ] = fpost[bounce[value], LeftWall]  
-#     for value in TopStencil: fin[value, BottomWall ] = fpost[bounce[value], BottomWall] 
-#     # Bouzidi condition for top lid
-#  
-#     fin[4, 1:xsize_max-1,0 ] = fpost[2, 1:xsize_max-1,0] 
-#     fin[7, 1:xsize_max-1,0 ] = fpost[5, 1:xsize_max-1,0] - array(1/6.0)*uLB
-#     fin[8, 1:xsize_max-1,0 ] = fpost[6, 1:xsize_max-1,0] + array(1/6.0)*uLB
-
-#     fin[LeftStencil, RightWall ] = ftemp[asarray( [bounce[i] for i in LeftStencil]) , RightWall]
-#     fin[TopStencil, BottomWall ] = ftemp[asarray( [bounce[i] for i in TopStencil]) , BottomWall]
-#     fin[RightStencil, LeftWall ] = ftemp[asarray( [bounce[i] for i in RightStencil]) , LeftWall]
-  
-    #Accounting for moving wall using zou-he condition 
-    # NEBB for walls
-    
-    fin[RightStencil, 0, :] =  feq[RightStencil, 0, :] #- feq[LeftStencil, 0, :] + fin[LeftStencil, 0, :]
-    fin[LeftStencil, xsize_max, :] = - feq[RightStencil, xsize_max, :] + (feq[LeftStencil, xsize_max, :] + fin[RightStencil, xsize_max, :])
-    fin[TopStencil, :, ysize_max] = - feq[BotStencil, :, ysize_max] + (feq[TopStencil, :, ysize_max] + fin[BotStencil, :, ysize_max])
-    fin[BotStencil, :, 0] = - feq[TopStencil, :, 0] + (feq[BotStencil, :, 0] + fin[TopStencil, :, 0])
-#     
-  #   fin1[RightStencil, 0, :] = - feq1[LeftStencil, 0, :] + (feq1[RightStencil, 0, :] + ftemp1[LeftStencil, 0, :])
-  #   fin1[TopStencil, :, ysize_max] = - feq1[BotStencil, :, ysize_max] + (feq1[TopStencil, :, ysize_max] + ftemp1[BotStencil, :, ysize_max])
-#     fin1[LeftStencil, xsize_max, :] = - feq1[RightStencil, xsize_max, :] + (feq1[LeftStencil, xsize_max, :] + ftemp1[RightStencil, xsize_max, :])
-#     fin1[BotStencil, :, 0] = - feq1[TopStencil, :, 0] + (feq1[BotStencil, :, 0] + ftemp1[TopStencil, :, 0])
+#     #np.copyto(ftemp,fin)
+#     #copyfunc(ftemp,fin)
+# #     ftemp1 = fin1
+#     rho = sumf(fin)
+#     #print('1 - '+str(np.max(rho)))  
 #        
-
-#NEBB accounting for tangential velocities
-    #temp = uLB
-    #uLB = 0
-     
-#     fin[4,:,0] = fin[2,0,:]
-#     fin[7,:,0] = fin[5,0,:] + 0.5*(fin[1,:,0] - fin[3,:,0]) - 0.5*uLB
-#     fin[8,:,0] = fin[6,0,:] - 0.5*(fin[1,:,0] - fin[3,:,0]) + 0.5*uLB
-# #             
-# # # # #     #corners - upper left and then upper right
-# # # #  #   uLB = 0     
-#     fin[1,0,0] = fin[3,0,0] + (2.0/3.0)*uLB
-#     fin[4,0,0] = fin[2,0,0] 
-#     fin[8,0,0] = fin[6,0,0] + (1.0/6.0)*uLB
-#     fin[5,0,0] = +(1.0/12.0)*uLB
-#     fin[7,0,0] = -(1.0/12.0)*uLB
-#     fin[0,0,0] = 1.0 - sumf(fin[1:,0,0])
-#     fin[3,xsize_max,0] = fin[1,xsize_max,0] - (2.0/3.0)*uLB
-#     fin[4,xsize_max,0] = fin[2,xsize_max,0] 
-#     fin[7,xsize_max,0] = fin[5,xsize_max,0] - (1.0/6.0)*uLB
-#     fin[6,xsize_max,0] =  -(1.0/12.0)*uLB
-#     fin[8,xsize_max,0] =  +(1.0/12.0)*uLB
-#     fin[0,xsize_max,0] = 1.0 - sumf(fin[1:,xsize_max,0])    
-    #uLB = temp
-    
-    #Adding smagorinsky models
-    ##Cs2 = 0.01 #0.0289 , smagorinsky constant 
-    #Applying Van Driest damping to make Cs2 zero at walls
-#     visc_inv = sqrt( (u[0,int(xsize/2),0]-u[0,int(xsize/2),1])/nuLB ) #viscous length scale inverse assuming dy =1
-#     Zplus = minimum(Xcoord-0,minimum(xsize_max-Xcoord,minimum(Ycoord-0,ysize_max-Ycoord)))*visc_inv # closest distance to a wall
-#     Csbulk = 0.16
-#     Cs = Csbulk*(1 - exp(-Zplus/26))
-#     Cs2 = Cs*Cs
-#     product1 = c[0,0]*c[0,1]*fin[0,:,:] + c[1,0]*c[1,1]*fin[1,:,:] + c[2,0]*c[2,1]*fin[2,:,:] + c[3,0]*c[3,1]*fin[3,:,:] + c[4,0]*c[4,1]*fin[4,:,:] + c[5,0]*c[5,1]*fin[5,:,:] + c[6,0]*c[6,1]*fin[6,:,:] + c[7,0]*c[7,1]*fin[7,:,:] + c[8,0]*c[8,1]*fin[8,:,:] 
-#     product2 = c[0,0]*c[0,1]*feq[0,:,:] + c[1,0]*c[1,1]*feq[1,:,:] + c[2,0]*c[2,1]*feq[2,:,:] + c[3,0]*c[3,1]*feq[3,:,:] + c[4,0]*c[4,1]*feq[4,:,:] + c[5,0]*c[5,1]*feq[5,:,:] + c[6,0]*c[6,1]*feq[6,:,:] + c[7,0]*c[7,1]*feq[7,:,:] + c[8,0]*c[8,1]*feq[8,:,:] 
-#     Qmf = product1 - product2 # momentum flux
-#     #tauS = ne.evaluate('0.5*(tau + sqrt( (tau*tau + ( 18*1.4142*Cs2*abs(Qmf) )/rho ) ) )') # tau + tau_turbulent
-#     tauS = 0.5*(tau + sqrt( (tau*tau + ( 18*1.4142*Cs2*abs(Qmf) )/rho ) ) ) # tau + tau_turbulent
-
-    
+#     #TRT
+#     #fplus = 0.5*(fin[:,:,:] + fin[bounce[:], :,:])
+#     #fminus = 0.5*(fin[:,:,:] - fin[bounce[:], :,:])
+#     #simplifying to increase speed
+# #     fplus[TopStencil]  = 0.5*(fin[TopStencil] + fin[BotStencil]); fplus[BotStencil] = fplus[TopStencil]
+# #     fplus[1]  = 0.5*(fin[1] + fin[3]); fplus[3] = fplus[1];fplus[0] = fin[0]
+# #     fminus[TopStencil]  = 0.5*(fin[TopStencil] - fin[BotStencil]); fminus[BotStencil] = -fminus[TopStencil]
+# #     fminus[1]  = 0.5*(fin[1] - fin[3]); fminus[3] = -fminus[1];fminus[0] = 0
+# #     
+# #     fplus[2]  = 0.5*(fin[2] + fin[4]); fplus[4] = fplus[2]
+# #     fplus[5]  = 0.5*(fin[5] + fin[7]); fplus[7] = fplus[5]
+# #     fplus[6]  = 0.5*(fin[6] + fin[8]); fplus[8] = fplus[6]
+# #     fplus[1]  = 0.5*(fin[1] + fin[3]); fplus[3] = fplus[1];fplus[0] = fin[0]
+# #     fminus[2]  = 0.5*(fin[2] - fin[4]); fminus[4] = -fminus[2]
+# #     fminus[5]  = 0.5*(fin[5] - fin[7]); fminus[7] = -fminus[5]
+# #     fminus[6]  = 0.5*(fin[6] - fin[8]); fminus[8] = -fminus[6]
+# #     fminus[1]  = 0.5*(fin[1] - fin[3]); fminus[3] = -fminus[1];fminus[0] = 0  
+#        
+#        
+#     #print(It)
+#    
+# #     rho1 = sumf(fin1)
+#     #u = dot(c.transpose(), fin.transpose((1,0,2)))/rho
+#     #peeling the loop to increase the speed
+#        
+# #     u[0] = (c[0,0]*fin[0]+c[1,0]*fin[1]+c[2,0]*fin[2]+c[3,0]*fin[3]+c[4,0]*fin[4]+c[5,0]*fin[5]+c[6,0]*fin[6]+c[7,0]*fin[7]+c[8,0]*fin[8])/rho
+# #     u[1] = (c[0,1]*fin[0]+c[1,1]*fin[1]+c[2,1]*fin[2]+c[3,1]*fin[3]+c[4,1]*fin[4]+c[5,1]*fin[5]+c[6,1]*fin[6]+c[7,1]*fin[7]+c[8,1]*fin[8])/rho
+#    
+#     u = ucprod(c,fin,rho)
+#    
+# #     u1[0,:,:] = (c[0,0]*fin1[0]+c[1,0]*fin1[1]+c[2,0]*fin1[2]+c[3,0]*fin1[3]+c[4,0]*fin1[4]+c[5,0]*fin1[5]+c[6,0]*fin1[6]+c[7,0]*fin1[7]+c[8,0]*fin1[8])/rho
+# #     u1[1,:,:] = (c[0,1]*fin1[0]+c[1,1]*fin1[1]+c[2,1]*fin1[2]+c[3,1]*fin1[3]+c[4,1]*fin1[4]+c[5,1]*fin1[5]+c[6,1]*fin1[6]+c[7,1]*fin1[7]+c[8,1]*fin1[8])/rho
+#    
+#    
+# # 
+#     rho[:, 0] = np.sum(fin[CentHStencil, :, 0],axis=0)+2.*np.sum(fin[TopStencil, :, 0],axis=0)
+# #     #rho1[:, 0] = sumf(ftemp1[CentHStencil, :, 0])+2.*sumf(ftemp1[TopStencil, :, 0])
+# #     #u[:,:,0]=InitVel[:,:,0]
+# #     
+#     u[:,0,1:]= 0 ; u[:,xsize_max,1:]= 0 ; u[:,:,ysize_max]= 0
+#     u[0,:,0]=uLB ; u[1,:,0] =0 #10 chosen randomly to not force corners
+# #     
+#        
+#     #feq = equ(rho,u)
+# #     splits=1
+# #     with ThreadPoolExecutor(max_workers=splits) as exe1:
+# #         sections1 = array_split(rho,splits,axis=0)
+# #         sections2 = array_split(u[0],splits,axis=0)
+# #         sections3 = array_split(u[1],splits,axis=0)
+# #         jobs = [exe1.submit(equ,m,n,o) for m,n,o in zip(sections1,sections2,sections3)]
+# #     feq = concatenate(asarray([job.result() for job in jobs]),axis=1)
+#     feq = equ(rho,u[0],u[1])
+#   
+#     #feq1 = equ(rho1,u1)
+#        
+#     #MRT
+# #     m_GS = dot(M_GS,fin.transpose(1,0,2))  # warning : m_GS is not same as M_GS
+# #     jx = m_GS[3]; jy = m_GS[5]
+# #     np.copyto(m_GS_eq,m_GS)# initiating m_GS equilibrium
+# #     jx = m_GS[3]; jy = m_GS[5] 
+# #     m_GS_eq[0,:,:] = rho
+# #     m_GS_eq[1,:,:] = -2.0*rho + 3.0*(jx*jx + jy*jy)
+# #     m_GS_eq[2,:,:] =  - 3.0*(jx*jx + jy*jy) + rho + 9*(jx*jx*jy*jy )
+# #     m_GS_eq[4,:,:] = - jx + 3.0*(jx**3)
+# #     m_GS_eq[6,:,:] = - jy + 3.0*(jy**3)
+# #     m_GS_eq[7,:,:] = jx*jx - jy*jy
+# #     m_GS_eq[8,:,:] = jx*jy
+#     #TRT    
+#     #feplus = 0.5*(feq[:,:,:] + feq[bounce[:], :,:])
+#     #feminus = 0.5*(feq[:,:,:] - feq[bounce[:], :,:])
+#     #simplifying to increase speed
+# #     feplus[TopStencil]  = 0.5*(feq[TopStencil] + feq[BotStencil]); feplus[BotStencil] = feplus[TopStencil]
+# #     feplus[1]  = 0.5*(feq[1] + feq[3]); feplus[3] = feplus[1];feplus[0] = feq[0]
+# #     feminus[TopStencil]  = 0.5*(feq[TopStencil] - feq[BotStencil]); feminus[BotStencil] = -feminus[TopStencil]
+# #     feminus[1]  = 0.5*(feq[1] - feq[3]); feminus[3] = -feminus[1];feminus[0] = 0    
+#       
+# #     feplus[2]  = 0.5*(feq[2] + feq[4]); feplus[4] = feplus[2]
+# #     feplus[5]  = 0.5*(feq[5] + feq[7]); feplus[7] = feplus[5]
+# #     feplus[6]  = 0.5*(feq[6] + feq[8]); feplus[8] = feplus[6]
+# #     feplus[1]  = 0.5*(feq[1] + feq[3]); feplus[3] = feplus[1];feplus[0] = feq[0]
+# #     feminus[2]  = 0.5*(feq[2] - feq[4]); feminus[4] = -feminus[2]
+# #     feminus[5]  = 0.5*(feq[5] - feq[7]); feminus[7] = -feminus[5]
+# #     feminus[6]  = 0.5*(feq[6] - feq[8]); feminus[8] = -feminus[6]
+# #     feminus[1]  = 0.5*(feq[1] - feq[3]); feminus[3] = -feminus[1];feminus[0] = 0 
+# #     
+#     #Collision - MRT    
+# #     m_GS = m_GS - dot(omega_diag, transpose((m_GS-m_GS_eq), (1,0,2)))
+# #     fpost = dot(M_GS_INV , m_GS.transpose(1,0,2))
+#     #temp = dot(omega_diag, transpose((m_GS-m_GS_eq), (1,0,2)))
+#     #fpost = fin - dot(M_GS_INV , transpose(temp, (1,0,2)) ) 
+#        
+#           
+#     #TRT
+#     #Collision - TRT
+# #     omegaS = 1.0/tauS
+# #     fpost = fin - omegaS*(fplus-feplus) - omegam*( fminus-feminus)
+#     #fpost = fin - omegap*(fplus-feplus) - omegam*( fminus-feminus)
+#       
+#     #Collision - SRT
+#     #omegaS= 1.0/tauS
+#     #fpost = fin - omegaS*(fin-feq)
+#     #fpost = ne.evaluate('fin - omegaS*(fin-feq)')
+#     #fpost = fin - omega*( fin-feq)
+#        
+#     fpost = ne.evaluate('fin - omega*( fin-feq)')     
+#        
+#    
+#    
+#     #print(mean(fpost))
+#    
+#     #streaming
+#        
+#     fin[0, :, :] = fpost[0, :, :]
+#        
+#     fin[1, 1:xsize_max,   :]     = fpost[1, 0:xsize_max-1,  :]
+#     fin[2,   :,   0:ysize_max-1] = fpost[2,   :,    1:ysize_max]
+#     fin[3, 0:xsize_max-1, :]     = fpost[3, 1:xsize_max,    :]
+#     fin[4,   :,   1:ysize_max]   = fpost[4,   :,    0:ysize_max-1]
+#    
+#     fin[5, 1:xsize_max,   0:ysize_max-1] = fpost[5, 0:xsize_max-1, 1:ysize_max]
+#     fin[6, 0:xsize_max-1, 0:ysize_max-1] = fpost[6, 1:xsize_max,   1:ysize_max]
+#     fin[7, 0:xsize_max-1, 1:ysize_max]   = fpost[7, 1:xsize_max,   0:ysize_max-1]
+#     fin[8, 1:xsize_max,   1:ysize_max]   = fpost[8, 0:xsize_max-1, 0:ysize_max-1]
+#        
+# #     fin1[0, :, :] = fpost1[0, :, :]
+# #      
+# #     fin1[1, 1:xsize_max,   :]     = fpost1[1, 0:xsize_max-1,  :]
+# #     fin1[2,   :,   0:ysize_max-1] = fpost1[2,   :,    1:ysize_max]
+# #     fin1[3, 0:xsize_max-1, :]     = fpost1[3, 1:xsize_max,    :]
+# #     fin1[4,   :,   1:ysize_max]   = fpost1[4,   :,    0:ysize_max-1]
+# #  
+# #     fin1[5, 1:xsize_max,   0:ysize_max-1] = fpost1[5, 0:xsize_max-1, 1:ysize_max]
+# #     fin1[6, 0:xsize_max-1, 0:ysize_max-1] = fpost1[6, 1:xsize_max,   1:ysize_max]
+# #     fin1[7, 0:xsize_max-1, 1:ysize_max]   = fpost1[7, 1:xsize_max,   0:ysize_max-1]
+# #     fin1[8, 1:xsize_max,   1:ysize_max]   = fpost1[8, 0:xsize_max-1, 0:ysize_max-1]
+#         
+#     
+#    
+#     # boundary condition at walls
+#        
+#    
+# #Simple Bounceback - half way link based - works only when tau/Dt is around 0.93
+# #     for value in LeftStencil: fin[value, RightWall ] = fpost[bounce[value], RightWall] 
+# #     for value in RightStencil: fin[value, LeftWall ] = fpost[bounce[value], LeftWall]  
+# #     for value in TopStencil: fin[value, BottomWall ] = fpost[bounce[value], BottomWall] 
+# #     # Bouzidi condition for top lid
+# #  
+# #     fin[4, 1:xsize_max-1,0 ] = fpost[2, 1:xsize_max-1,0] 
+# #     fin[7, 1:xsize_max-1,0 ] = fpost[5, 1:xsize_max-1,0] - array(1/6.0)*uLB
+# #     fin[8, 1:xsize_max-1,0 ] = fpost[6, 1:xsize_max-1,0] + array(1/6.0)*uLB
+#    
+# #     fin[LeftStencil, RightWall ] = ftemp[asarray( [bounce[i] for i in LeftStencil]) , RightWall]
+# #     fin[TopStencil, BottomWall ] = ftemp[asarray( [bounce[i] for i in TopStencil]) , BottomWall]
+# #     fin[RightStencil, LeftWall ] = ftemp[asarray( [bounce[i] for i in RightStencil]) , LeftWall]
+#      
+#     #Accounting for moving wall using zou-he condition 
+#     # NEBB for walls
+#        
+#     fin[RightStencil, 0, :] =  feq[RightStencil, 0, :] #- feq[LeftStencil, 0, :] + fin[LeftStencil, 0, :]
+#     fin[LeftStencil, xsize_max, :] = - feq[RightStencil, xsize_max, :] + (feq[LeftStencil, xsize_max, :] + fin[RightStencil, xsize_max, :])
+#     fin[TopStencil, :, ysize_max] = - feq[BotStencil, :, ysize_max] + (feq[TopStencil, :, ysize_max] + fin[BotStencil, :, ysize_max])
+#     fin[BotStencil, :, 0] = - feq[TopStencil, :, 0] + (feq[BotStencil, :, 0] + fin[TopStencil, :, 0])
+#   
+# #    print('1 - '+str(np.mean(fin)))  
+#   #   fin1[RightStencil, 0, :] = - feq1[LeftStencil, 0, :] + (feq1[RightStencil, 0, :] + ftemp1[LeftStencil, 0, :])
+#   #   fin1[TopStencil, :, ysize_max] = - feq1[BotStencil, :, ysize_max] + (feq1[TopStencil, :, ysize_max] + ftemp1[BotStencil, :, ysize_max])
+# #     fin1[LeftStencil, xsize_max, :] = - feq1[RightStencil, xsize_max, :] + (feq1[LeftStencil, xsize_max, :] + ftemp1[RightStencil, xsize_max, :])
+# #     fin1[BotStencil, :, 0] = - feq1[TopStencil, :, 0] + (feq1[BotStencil, :, 0] + ftemp1[TopStencil, :, 0])
+# #        
+#    
+# #NEBB accounting for tangential velocities
+#     #temp = uLB
+#     #uLB = 0
+#         
+# #     fin[4,:,0] = fin[2,0,:]
+# #     fin[7,:,0] = fin[5,0,:] + 0.5*(fin[1,:,0] - fin[3,:,0]) - 0.5*uLB
+# #     fin[8,:,0] = fin[6,0,:] - 0.5*(fin[1,:,0] - fin[3,:,0]) + 0.5*uLB
+# # #             
+# # # # # #     #corners - upper left and then upper right
+# # # # #  #   uLB = 0     
+# #     fin[1,0,0] = fin[3,0,0] + (2.0/3.0)*uLB
+# #     fin[4,0,0] = fin[2,0,0] 
+# #     fin[8,0,0] = fin[6,0,0] + (1.0/6.0)*uLB
+# #     fin[5,0,0] = +(1.0/12.0)*uLB
+# #     fin[7,0,0] = -(1.0/12.0)*uLB
+# #     fin[0,0,0] = 1.0 - sumf(fin[1:,0,0])
+# #     fin[3,xsize_max,0] = fin[1,xsize_max,0] - (2.0/3.0)*uLB
+# #     fin[4,xsize_max,0] = fin[2,xsize_max,0] 
+# #     fin[7,xsize_max,0] = fin[5,xsize_max,0] - (1.0/6.0)*uLB
+# #     fin[6,xsize_max,0] =  -(1.0/12.0)*uLB
+# #     fin[8,xsize_max,0] =  +(1.0/12.0)*uLB
+# #     fin[0,xsize_max,0] = 1.0 - sumf(fin[1:,xsize_max,0])    
+#     #uLB = temp
+#        
+#     #Adding smagorinsky models
+#     ##Cs2 = 0.01 #0.0289 , smagorinsky constant 
+#     #Applying Van Driest damping to make Cs2 zero at walls
+# #     visc_inv = sqrt( (u[0,int(xsize/2),0]-u[0,int(xsize/2),1])/nuLB ) #viscous length scale inverse assuming dy =1
+# #     Zplus = minimum(Xcoord-0,minimum(xsize_max-Xcoord,minimum(Ycoord-0,ysize_max-Ycoord)))*visc_inv # closest distance to a wall
+# #     Csbulk = 0.16
+# #     Cs = Csbulk*(1 - exp(-Zplus/26))
+# #     Cs2 = Cs*Cs
+# #     product1 = c[0,0]*c[0,1]*fin[0,:,:] + c[1,0]*c[1,1]*fin[1,:,:] + c[2,0]*c[2,1]*fin[2,:,:] + c[3,0]*c[3,1]*fin[3,:,:] + c[4,0]*c[4,1]*fin[4,:,:] + c[5,0]*c[5,1]*fin[5,:,:] + c[6,0]*c[6,1]*fin[6,:,:] + c[7,0]*c[7,1]*fin[7,:,:] + c[8,0]*c[8,1]*fin[8,:,:] 
+# #     product2 = c[0,0]*c[0,1]*feq[0,:,:] + c[1,0]*c[1,1]*feq[1,:,:] + c[2,0]*c[2,1]*feq[2,:,:] + c[3,0]*c[3,1]*feq[3,:,:] + c[4,0]*c[4,1]*feq[4,:,:] + c[5,0]*c[5,1]*feq[5,:,:] + c[6,0]*c[6,1]*feq[6,:,:] + c[7,0]*c[7,1]*feq[7,:,:] + c[8,0]*c[8,1]*feq[8,:,:] 
+# #     Qmf = product1 - product2 # momentum flux
+# #     #tauS = ne.evaluate('0.5*(tau + sqrt( (tau*tau + ( 18*1.4142*Cs2*abs(Qmf) )/rho ) ) )') # tau + tau_turbulent
+# #     tauS = 0.5*(tau + sqrt( (tau*tau + ( 18*1.4142*Cs2*abs(Qmf) )/rho ) ) ) # tau + tau_turbulent
+#   
+#     
+    rho, u, fin, feq = allfunc(rho,u,fin,feq) 
+    #print(np.mean(rho))
+    #print(np.mean(rho1)) 
     if( (It%Pinterval == 0) & (SaveVTK | SavePlot)) :
        
         print ('current iteration :', It)
