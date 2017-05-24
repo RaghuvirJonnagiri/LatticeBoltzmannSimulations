@@ -64,7 +64,7 @@ cpdef allfunc(ndarray[double_t, ndim=2] rho, ndarray[double_t, ndim=3] u,ndarray
     xsize_max = dim1-1
     ysize_max = dim2-1
     rho = np.sum(fin, axis =0)
-    
+    #print(openmp.omp_get_max_threads())
     #if (1>0):
     with nogil, parallel(num_threads=4):    
         for i in prange(dim1):    #schedule=static or dynamic?

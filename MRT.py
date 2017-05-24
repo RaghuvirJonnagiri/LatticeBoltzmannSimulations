@@ -6,7 +6,7 @@ sudo apt-get install python-vtk?
 
 '''
 #@profile
-
+from numba import vectorize
 import numpy as np
 #import numpy as np
 import math
@@ -31,7 +31,7 @@ tstart = timer()
 
 # Plot Settings
 Pinterval = 1000# iterations to print next output
-SavePlot = False #save plots
+SavePlot = True #save plots
 SaveVTK = False # save files in vtk format
 project = 'ldc'  #for naming output files 
 OutputFolder = './output'
@@ -39,10 +39,10 @@ CurrentFolder = os.getcwd()
 
 # Lattice Parameters
 maxIt = 3000 # time iterations
-Re    = 10000.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
+Re    = 1000.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
 
 #Number of cells
-xsize, ysize = 200, 200
+xsize, ysize = 160, 160
 xsize_max, ysize_max = xsize-1, ysize-1 # highest index in each direction
 q = 9 # d2Q9
 
@@ -197,8 +197,9 @@ fminus = np.empty((q,xsize,ysize))
 feplus = np.empty((q,xsize,ysize))
 feminus = np.empty((q,xsize,ysize))
 ftemp = np.empty((q,xsize,ysize))
-fin = np.empty((q,xsize,ysize))
+fin = np.zeros((q,xsize,ysize))
 fin1 = np.empty((q,xsize,ysize))
+rho1 = np.empty((xsize,ysize))
 fpost = np.empty((q,xsize,ysize))
 
 
@@ -225,15 +226,15 @@ def equ(rho,u):
     usqr = (u[0]*u[0]+u[1]*u[1])
 
     feq = np.empty((q, xsize, ysize))
-#     for i in range(q):
-#         feq[i, :, :] = rho*t[i]*(1. + 3.0*cu[i] + 9*0.5*cu[i]*cu[i] - 3.0*0.5*usqr)
-#     return feq
+    for i in range(q):
+        feq[i, :, :] = rho*t[i]*(1. + 3.0*cu[i] + 9*0.5*cu[i]*cu[i] - 3.0*0.5*usqr)
+    return feq
 
     
-    rhob = rho[np.newaxis,:,:]
-    usqrb = usqr[np.newaxis,:,:]
-    feq = ne.evaluate('rhob*tb*( 1.0 + 3.0*cu + 4.5*cu*cu - 1.5*usqrb)')
-    return feq
+#     rhob = rho[np.newaxis,:,:]
+#     usqrb = usqr[np.newaxis,:,:]
+#     feq = ne.evaluate('rhob*tb*( 1.0 + 3.0*cu + 4.5*cu*cu - 1.5*usqrb)')
+#     return feq
 #     print(np.mean(feq))
     
 
@@ -278,11 +279,16 @@ regime = 'Laminar' #options : Laminar, Turbulent
 tmethod = 'SRT' # options : SRT, TRT, MRT
 BC = 'EB-NEBB ' # options : BB(half way link based), NEBB (wet node)
 
+
+
+
 # Time Loop
 for It in range(maxIt):
     # macro density
     np.copyto(ftemp,fin)
 #     ftemp1 = fin1
+    #rho = np.add.reduce(fin)
+
     rho = np.sum(fin,axis=0)
     
     
@@ -335,8 +341,8 @@ for It in range(maxIt):
     u[:,0,1:]= 0 ; u[:,xsize_max,1:]= 0 ; u[:,:,ysize_max]= 0
     u[0,:,0]=uLB ; u[1,:,0] =0 #10 chosen randomly to not force corners
 #     
-
     feq = equ(rho,u)
+
 #     feq1 = equ(rho1,u1)
     
     #MRT
@@ -388,7 +394,7 @@ for It in range(maxIt):
     #fpost = ne.evaluate('fin - omegaS*(fin-feq)')
     #fpost = fin - omega*( fin-feq)
     fpost = ne.evaluate('fin - omega*( fin-feq)')     
-    
+
 
 
     #print(mean(fpost))
@@ -445,7 +451,7 @@ for It in range(maxIt):
     fin[LeftStencil, xsize_max, :] = - feq[RightStencil, xsize_max, :] + (feq[LeftStencil, xsize_max, :] + fin[RightStencil, xsize_max, :])
     fin[TopStencil, :, ysize_max] = - feq[BotStencil, :, ysize_max] + (feq[TopStencil, :, ysize_max] + fin[BotStencil, :, ysize_max])
     fin[BotStencil, :, 0] = - feq[TopStencil, :, 0] + (feq[BotStencil, :, 0] + fin[TopStencil, :, 0])
-#     
+ 
   #   fin1[RightStencil, 0, :] = - feq1[LeftStencil, 0, :] + (feq1[RightStencil, 0, :] + ftemp1[LeftStencil, 0, :])
   #   fin1[TopStencil, :, ysize_max] = - feq1[BotStencil, :, ysize_max] + (feq1[TopStencil, :, ysize_max] + ftemp1[BotStencil, :, ysize_max])
 #     fin1[LeftStencil, xsize_max, :] = - feq1[RightStencil, xsize_max, :] + (feq1[LeftStencil, xsize_max, :] + ftemp1[RightStencil, xsize_max, :])
@@ -494,7 +500,7 @@ for It in range(maxIt):
     if( (It%Pinterval == 0) & (SaveVTK | SavePlot)) :
        
         print ('current iteration :', It)
-        print (mean(u[0,:,0])/uLB)
+        print (np.mean(u[0,:,0])/uLB)
         Usquare = u[0,:,:]**2 + u[1,:,:]**2
         
         Usquare = Usquare/(uLB**2)
@@ -502,12 +508,12 @@ for It in range(maxIt):
         # replacing all boundaries with nan to get location of vortices
         Usquare[0:BCoffset,:] = nan ; Usquare[:,0:BCoffset] = nan
         Usquare[xsize_max-BCoffset:xsize,:] = nan;Usquare[:,ysize_max-BCoffset:ysize] = nan
-        Loc1 = unravel_index(nanargmin(Usquare),Usquare.shape)
+        Loc1 = np.unravel_index(np.nanargmin(Usquare),Usquare.shape)
         #print(Loc1)
         #print(Usquare[Loc1[0], Loc1[1]])
         # finding other vortices
         Usquare[Loc1[0]-BCoffset:Loc1[0]+BCoffset,Loc1[1]-BCoffset:Loc1[1]+BCoffset] = nan
-        Loc2 = unravel_index(nanargmin(Usquare),Usquare.shape)
+        Loc2 = np.unravel_index(np.nanargmin(Usquare),Usquare.shape)
         #print(Loc2)
         #print(Usquare[Loc2[0], Loc2[1]])        
         
@@ -539,7 +545,7 @@ for It in range(maxIt):
             subplot2.set_xlabel('X-position', fontsize = 20);subplot2.set_ylabel('Uy', fontsize = 20)
             
             #subplot1.imshow(sqrt(u[0]**2+u[1]**2).transpose(), pyplot.set_cmap('jet') , vmin = 0, vmax = 0.02)
-            color1 = (sqrt(u[0,:,:]**2+u[1,:,:]**2)/uLB ).transpose()
+            color1 = (np.sqrt(u[0,:,:]**2+u[1,:,:]**2)/uLB ).transpose()
             strm = subplot3.streamplot(XNorm,YNorm,(u[0,:,:]).transpose(),(u[1,:,:]).transpose(), color =color1,cmap=pyplot.cm.jet)#,norm=matplotlib.colors.Normalize(vmin=0,vmax=1)) 
             cbar = pyplot.colorbar(strm.lines, ax = subplot3)
             subplot3.plot(Loc1[0]/xsize,(ysize_max-Loc1[1])/ysize,'ro', label='Vortex1')
@@ -551,7 +557,7 @@ for It in range(maxIt):
             
             #print((YNorm == array(Y_GhiaVer*ysize_max).astype(int)))
             Ux_temp = u[0,int(xsize/2),LBMy]/uLB
-            temp = abs( ( abs(Ux_GhiaVer[:-1]) - abs(fliplr(atleast_2d(Ux_temp))[0])) / ( len(Ux_temp)*maximum(abs(Ux_GhiaVer[:-1]),abs(fliplr(atleast_2d(Ux_temp))[0]) )) )  #rsquare estimate
+            temp = abs( ( abs(Ux_GhiaVer[:-1]) - abs(np.fliplr(np.atleast_2d(Ux_temp))[0])) / ( len(Ux_temp)*np.maximum(abs(Ux_GhiaVer[:-1]),abs(np.fliplr(np.atleast_2d(Ux_temp))[0]) )) )  #rsquare estimate
             NormErr_column.append(1-sumf(temp))
             #print ((1 - sumf(abs(fliplr(atleast_2d(Ux_GhiaVer[:-1]))[0] - Ux_temp)/(len(Ux_temp)*abs(Ux_GhiaVer[:-1])) )))
             #print(NormErr_column)
