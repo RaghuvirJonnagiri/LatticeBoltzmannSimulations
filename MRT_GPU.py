@@ -47,8 +47,8 @@ maxIt = 3000 # time iterations
 Re    = 1000.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
 
 #Number of cells
-xsize = 32*20 # must be multiple of 32 for GPU processing
-ysize = 32*20 # must be multiple of 32 for GPU processing
+xsize = 32*5 # must be multiple of 32 for GPU processing
+ysize = 32*5 # must be multiple of 32 for GPU processing
 xsize_max, ysize_max = xsize-1, ysize-1 # highest index in each direction
 q = 9 # d2Q9
 
@@ -283,16 +283,25 @@ rho_g = cuda.mem_alloc(rho.size * rho.dtype.itemsize)
 u_g = cuda.mem_alloc(u.nbytes)
 c_g = cuda.mem_alloc(c.nbytes)
 t_g = cuda.mem_alloc(t.nbytes)
-cuda.memcpy_htod(fin_g,feq)
-cuda.memcpy_htod(ftemp_g,feq)
-cuda.memcpy_htod(feq_g,feq)
+
+#Pinning memory for faster transfers between cpu and gpu
+fin_pin = cuda.register_host_memory(fin)
+#this didnt seem to make difference, so using fin only for transfers
+
+cuda.memcpy_htod(fin_g,fin)
+cuda.memcpy_htod(ftemp_g,fin)
+cuda.memcpy_htod(feq_g,fin)
 cuda.memcpy_htod(rho_g,rho)
 cuda.memcpy_htod(u_g,u)
-cuda.memcpy_htod(c_g,c)
-cuda.memcpy_htod(t_g,t)
+# cuda.memcpy_htod(c_g,c)
+# cuda.memcpy_htod(t_g,t)
+
+
+
+
 
 Gpu1 = """
-    __global__ void Gpu1(float* fin_g, float* ftemp_g, float* feq_g, float* rho_g, float* u_g, int* c_g, float* t_g){
+    __global__ void Gpu1(float* fin_g, float* ftemp_g, float* feq_g, float* rho_g, float* u_g){
         int x     = threadIdx.x + blockIdx.x * blockDim.x;
         int y     = threadIdx.y + blockIdx.y * blockDim.y;
         int xsize    = blockDim.x * gridDim.x;
@@ -304,11 +313,23 @@ Gpu1 = """
         float omega = %s;
         float usqr = 0.0;
         float cu = 0.0;
-        rho_g[i] = fin_g[0*d+i]+fin_g[1*d+i]+fin_g[2*d+i]+fin_g[3*d+i]+fin_g[4*d+i]+fin_g[5*d+i]+fin_g[6*d+i]+fin_g[7*d+i]+fin_g[8*d+i];
+        __shared__ float t_g[9] ;
+        __shared__ int c_g[18] ;
+        float fin_l[9]; // local fin to avoid multiple global memory access
+        fin_l[0]=fin_g[0*d+i];fin_l[1]=fin_g[1*d+i];fin_l[2]=fin_g[2*d+i];fin_l[3]=fin_g[3*d+i];fin_l[4]=fin_g[4*d+i];
+        fin_l[5]=fin_g[5*d+i];fin_l[6]=fin_g[6*d+i];fin_l[7]=fin_g[7*d+i];fin_l[8]=fin_g[8*d+i];
+        
+        t_g[0]=4.0/9.0 ;t_g[1]=1.0/9.0;t_g[2]=1.0/9.0;t_g[3]=1.0/9.0;t_g[4]=1.0/9.0;t_g[5]=1.0/36.0;t_g[6]=1.0/36.0;t_g[7]=1.0/36.0;t_g[8]=1.0/36.0;
+        c_g[0]=0;c_g[1]=0;c_g[2]=1;c_g[3]=0;c_g[4]=0;c_g[5]=1;c_g[6]=-1;c_g[7]=0;c_g[8]=0;
+        c_g[9]=-1;c_g[10]=1;c_g[11]=1;c_g[12]=-1;c_g[13]=1;c_g[14]=-1;c_g[15]=-1;c_g[16]=1;c_g[17]=-1;
         
         
-        u_g[0*d+i] = (c_g[0]*fin_g[0*d+i]+c_g[2]*fin_g[1*d+i]+c_g[4]*fin_g[2*d+i]+c_g[6]*fin_g[3*d+i]+c_g[8]*fin_g[4*d+i]+c_g[10]*fin_g[5*d+i]+c_g[12]*fin_g[6*d+i]+c_g[14]*fin_g[7*d+i]+c_g[16]*fin_g[8*d+i])/rho_g[i];
-        u_g[1*d+i] = (c_g[1]*fin_g[0*d+i]+c_g[3]*fin_g[1*d+i]+c_g[5]*fin_g[2*d+i]+c_g[7]*fin_g[3*d+i]+c_g[9]*fin_g[4*d+i]+c_g[11]*fin_g[5*d+i]+c_g[13]*fin_g[6*d+i]+c_g[15]*fin_g[7*d+i]+c_g[17]*fin_g[8*d+i])/rho_g[i];
+        //cs = 2;    
+        rho_g[i] = fin_l[0]+fin_l[1]+fin_l[2]+fin_l[3]+fin_l[4]+fin_l[5]+fin_l[6]+fin_l[7]+fin_l[8];
+        
+        
+        u_g[0*d+i] = (c_g[0]*fin_l[0]+c_g[2]*fin_l[1]+c_g[4]*fin_l[2]+c_g[6]*fin_l[3]+c_g[8]*fin_l[4]+c_g[10]*fin_l[5]+c_g[12]*fin_l[6]+c_g[14]*fin_l[7]+c_g[16]*fin_l[8])/rho_g[i];
+        u_g[1*d+i] = (c_g[1]*fin_l[0]+c_g[3]*fin_l[1]+c_g[5]*fin_l[2]+c_g[7]*fin_l[3]+c_g[9]*fin_l[4]+c_g[11]*fin_l[5]+c_g[13]*fin_l[6]+c_g[15]*fin_l[7]+c_g[17]*fin_l[8])/rho_g[i];
      
         // BCs left wall, right wall, bottom wall and top wall
         if ( x == 0 or x == xsize-1 or y == ysize-1){
@@ -316,7 +337,7 @@ Gpu1 = """
             u_g[1*d+i] =0;    
         }           
         if (y==0){ 
-            rho_g[i] = fin_g[0*d+i]+fin_g[1*d+i]+fin_g[3*d+i]+2*(fin_g[2*d+i]+fin_g[5*d+i]+fin_g[6*d+i]);
+            rho_g[i] = fin_l[0]+fin_l[1]+fin_l[3]+2*(fin_l[2]+fin_l[5]+fin_l[6]);
             u_g[0*d+i]=uLB; 
             u_g[1*d+i] =0;
         }
@@ -326,7 +347,7 @@ Gpu1 = """
             feq_g[k*d+i] = rho_g[i]*t_g[k]*(1. + 3.0*cu + 9*0.5*cu*cu - 3.0*0.5*usqr);
               
             if ( (x+c_g[k*2]>=0) and (x+c_g[k*2]<xsize) and (y-c_g[k*2+1]>=0) and (y-c_g[k*2+1]<ysize) ){
-                ftemp_g[k*d+x+c_g[k*2]+(y-c_g[k*2+1])*xsize] = fin_g[k*d+i] - omega*(fin_g[k*d+i]-feq_g[k*d+i]) ; // j-c because -ve y axis  
+                ftemp_g[k*d+x+c_g[k*2]+(y-c_g[k*2+1])*xsize] = fin_l[k] - omega*(fin_l[k]-feq_g[k*d+i]) ; // j-c because -ve y axis  
             }
         }
         
@@ -383,7 +404,7 @@ for It in range(maxIt):
 #     print('1- ' + str(np.max(feq)))
 #     print(feq[1,:,:])
     cuda.memcpy_htod(fin_g, fin)   
-    Gpu1(fin_g,ftemp_g, feq_g, rho_g, u_g, c_g, t_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY))
+    Gpu1(fin_g,ftemp_g, feq_g, rho_g, u_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY))
 #     cuda.memcpy_dtoh(feq,feq_g)
 #     cuda.memcpy_dtoh(u,u_g)
 # #     print('2- ' + str(np.max(feq)))
@@ -397,19 +418,21 @@ for It in range(maxIt):
 #     print(feq[1,:,:])
     Gpuf(ftemp_g, feq_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY))
     cuda.memcpy_dtoh(fin,ftemp_g)
-    cuda.memcpy_dtoh(rho,rho_g)
-    cuda.memcpy_dtoh(u,u_g)
+
     
 #     print(np.mean(fin))
 #     print(np.mean(rho))
     
-    rho = rho.transpose()
-    u[0,:,:] = u[0,:,:].transpose()
-    u[1,:,:] = u[1,:,:].transpose()
+
     
 
     if( (It%Pinterval == 0) & (SaveVTK | SavePlot)) :
-       
+        cuda.memcpy_dtoh(rho,rho_g)
+        cuda.memcpy_dtoh(u,u_g)
+        rho = rho.transpose()
+        u[0,:,:] = u[0,:,:].transpose()
+        u[1,:,:] = u[1,:,:].transpose()   
+        
         print ('current iteration :', It)
         print (np.mean(u[0,:,0])/uLB)
         Usquare = u[0,:,:]**2 + u[1,:,:]**2
