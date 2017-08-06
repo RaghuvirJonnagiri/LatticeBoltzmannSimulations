@@ -43,14 +43,15 @@ OutputFolder = './output'
 CurrentFolder = os.getcwd()
 
 # Lattice Parameters
-maxIt = 1000000 # time iterations
-Re    = 1000.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
+maxIt = 3000000 # time iterations
+Re    = 10000.0 # Reynolds number 100 400 1000 3200 5000 7500 10000
 RT = 'SRT' # choose relaxation time method : SRT, TRT or MRT
+turb = 1 ; # 1 = smagorinsky model. 0 = no turbulence. 
 
 count = 0 # to calculate number of iterations to stop for convergence 
 #Number of cells
-xsize = 32*12 # must be multiple of 32 for GPU processing
-ysize = 32*12 # must be multiple of 32 for GPU processing
+xsize = 32*5 # must be multiple of 32 for GPU processing
+ysize = 32*5# must be multiple of 32 for GPU processing
 xsize_max, ysize_max = xsize-1, ysize-1 # highest index in each direction
 q = 9 # d2Q9
 
@@ -62,12 +63,16 @@ print('xsize value is ', xsize)
 nuLB = uLB*ysize/Re #viscosity coefficient
 
 omega = 2.0 / (6.*nuLB+1)
-tauS = np.empty((xsize,ysize)) # relaxation times for turbulent flows - SGS
+tauS = np.zeros((xsize,ysize)) # relaxation times for turbulent flows - SGS
 tauS[:,:] = 1.0/omega
 tau = np.empty((xsize,ysize)) 
 tau[:,:] = 1.0/omega
 print('Re chosen  is ', Re)
 print('RT chosen is ', RT)
+if turb ==1 :
+    print('Turbulence is on')
+else :
+    print('Turbulence is off')
 print('the value of tau(/Dt) is ', 1/omega) # some BCs need this to be 1
 
 tau_check = 0.5 +(1/8.0)*uLB # minimum value for stability
@@ -77,21 +82,24 @@ tau_check = 0.5 +(1/8.0)*uLB # minimum value for stability
 omegap = omega  
 delTRT = 1.0/3.5 # choose this based on the error that you want to focus on
 omegam = 1.0/(0.5 + ( delTRT/( (1/omegap)-0.5 )) )
-if RT == 'TRT':
-    print ('the value of deltaTRT is ', delTRT)
-    print ('omegap, omegam :', round(omegap,4),' , ', round(omegam,4))
 
-#MRT - relaxation time vector
+
+#MRT - relaxation time vector)
 omega_nu = omega # from shear viscosity
 omega_e =  1.0 # stokes hypothesis - bulk viscosity is zero
-omega_eps , omega_q = 1.0,1.2 #0.71, 0.83 # randomly chosen
+omega_eps , omega_q = 1.2,1.2 #0.71, 0.83 # randomly chosen
 omega_vec = [0.0, omega_e, omega_eps, 0.0, omega_q, 0.0, omega_q, omega_nu, omega_nu]
 #omega_vec = ones((q)); omega_vec[:] = omega
 omega_diag = np.diag(omega_vec)
 
-print('omega omegap omegam omega_nu omega_e omega_eps omega_q') # For reference
-print(omega, omegap, omegam, omega_nu, omega_e, omega_eps, omega_q)
-
+if RT == 'SRT':
+    print(' the value of omega is ', omega)
+elif RT == 'TRT':
+    print('the value of deltaTRT is ', delTRT)
+    print('omegap, omegam :', round(omegap,4),' , ', round(omegam,4))
+elif RT == 'MRT':
+    print('omega omegap omegam omega_nu omega_e omega_eps omega_q') # For reference
+    print(omega, omegap, omegam, omega_nu, omega_e, omega_eps, omega_q)
 
 ## Plot Setup
 
@@ -266,7 +274,10 @@ if (SavePlot):
 os.chdir(OutputFolder)
 
 # Following are hardcoded to avoid if loops. Options are just for printing.
-regime = 'Laminar' #options : Laminar, Turbulent
+if turb == 1:
+    regime = 'Laminar' #options : Laminar, Turbulent
+elif turb ==0:
+    regime = 'Turbulent'
 BC = 'EB-NEBB ' # options : BB(half way link based), NEBB (wet node)
 
 u[0,:,:] = u[0,:,:].transpose()
@@ -288,6 +299,7 @@ fin = fin.astype(np.float32)
 fpost = fpost.astype(np.float32)
 c = c.astype(np.int32)
 t = t.astype(np.float32)
+tauS = tauS.astype(np.float32)
 # uLB = uLB.astype(np.float32)
 # omegap = omegap.astype(np.float32); omegam = omegam.astype(np.float32)
 # omega_e = omega_e.astype(np.float32); omega_eps = omega_eps.astype(np.float32)
@@ -298,6 +310,7 @@ fin_g = cuda.mem_alloc(fin.size * fin.dtype.itemsize)
 ftemp_g = cuda.mem_alloc(fin.nbytes)
 feq_g = cuda.mem_alloc(fin.size * fin.dtype.itemsize)
 rho_g = cuda.mem_alloc(rho.size * rho.dtype.itemsize)
+taus_g = cuda.mem_alloc(tauS.size * tauS.dtype.itemsize)
 u_g = cuda.mem_alloc(u.nbytes)
 c_g = cuda.mem_alloc(c.nbytes)
 t_g = cuda.mem_alloc(t.nbytes)
@@ -311,6 +324,7 @@ cuda.memcpy_htod(fin_g,fin)
 cuda.memcpy_htod(ftemp_g,fin)
 cuda.memcpy_htod(feq_g,fin)
 cuda.memcpy_htod(rho_g,rho)
+cuda.memcpy_htod(taus_g, tauS)
 cuda.memcpy_htod(u_g,u)
 #cuda.memcpy_htod(fpost_g,fin)
 # cuda.memcpy_htod(c_g,c)
@@ -322,18 +336,24 @@ cuda.memcpy_htod(u_g,u)
 if RT == 'SRT':
     
     funRT = """
-        __global__ void funRT(float* fin_g, float* ftemp_g, float* feq_g, float* rho_g, float* u_g){
+        __global__ void funRT(float* fin_g, float* ftemp_g, float* feq_g, float* rho_g, float* u_g, float* taus_g){
             int x     = threadIdx.x + blockIdx.x * blockDim.x;
             int y     = threadIdx.y + blockIdx.y * blockDim.y;
-            int xsize    = blockDim.x * gridDim.x;
-            int ysize    = blockDim.y * gridDim.y;
+            int xsize    = blockDim.x * gridDim.x; int xsize_max = xsize-1;
+            int ysize    = blockDim.y * gridDim.y; int ysize_max = ysize-1;
             int d = xsize * ysize;
             int i = x + y * xsize;
             int k = 0;
             float uLB = %s;
             float omega = %s;
+            int turb = %s;
+            float Csbulk = 0.16;
+            float nuLB = (1.0/(3.0*omega)) - (1.0/6.0);
+            float visc_inv=0; float Zplus=0; float Cs=0; float Cs2 = 0.0; float tau = 1.0/omega ;
+            float product1 =0; float product2 =0; float Qmf =0; 
             float usqr = 0.0;
             float cu = 0.0;
+            float rho_l=rho_g[i];
             __shared__ float t_g[9] ;
             __shared__ int c_g[18] ;
             float fin_l[9]; // local fin to avoid multiple global memory access
@@ -345,9 +365,29 @@ if RT == 'SRT':
             c_g[9]=-1;c_g[10]=1;c_g[11]=1;c_g[12]=-1;c_g[13]=1;c_g[14]=-1;c_g[15]=-1;c_g[16]=1;c_g[17]=-1;
             
             
-            //cs = 2;    
-            rho_g[i] = fin_l[0]+fin_l[1]+fin_l[2]+fin_l[3]+fin_l[4]+fin_l[5]+fin_l[6]+fin_l[7]+fin_l[8];
+            if (turb==1) {
             
+                //Adding smagorinsky models
+                //Applying Van Driest damping to make Cs2 zero at walls, referenced from GLBE_Premnath_2009
+                visc_inv = sqrt( abs(u_g[int(xsize/2)]-u_g[int(xsize/2)+xsize])/(nuLB*rho_l) ) ; //viscous length scale inverse assuming dy =1
+                Zplus = min(x-0,min(xsize_max-x,min(y-0,ysize_max-y)))*visc_inv ; // closest distance to a wall
+                Cs = Csbulk*(1 - exp(-Zplus/26)) ;
+                Cs2 = Cs*Cs ;
+                Cs2 = 0.025 ; // 0.0289 , smagorinsky constant if SGS modelling is not desired
+                //Following formula is referenced from LES_LDC_Weichen_Lei_2013
+                for (k=0;k<9;k=k+1){
+                    product1 = c_g[k*2]*c_g[k*2+1]*fin_g[k*d+i] + product1; 
+                    product2 = c_g[k*2]*c_g[k*2+1]*feq_g[k*d+i] + product2;  
+                }
+                Qmf = product1 - product2 ; // momentum flux
+                tau = 0.5*(tau + sqrt( (tau*tau + ( 18*1.4142*Cs2*abs(Qmf) )/rho_g[i] ) ) ) ; // tau + tau_turbulent
+                omega = 1.0/tau;
+                taus_g[i] = tau ;
+           
+            }             
+            
+            rho_l = fin_l[0]+fin_l[1]+fin_l[2]+fin_l[3]+fin_l[4]+fin_l[5]+fin_l[6]+fin_l[7]+fin_l[8];
+            rho_g[i] = rho_l;
             
             u_g[0*d+i] = (c_g[0]*fin_l[0]+c_g[2]*fin_l[1]+c_g[4]*fin_l[2]+c_g[6]*fin_l[3]+c_g[8]*fin_l[4]+c_g[10]*fin_l[5]+c_g[12]*fin_l[6]+c_g[14]*fin_l[7]+c_g[16]*fin_l[8])/rho_g[i];
             u_g[1*d+i] = (c_g[1]*fin_l[0]+c_g[3]*fin_l[1]+c_g[5]*fin_l[2]+c_g[7]*fin_l[3]+c_g[9]*fin_l[4]+c_g[11]*fin_l[5]+c_g[13]*fin_l[6]+c_g[15]*fin_l[7]+c_g[17]*fin_l[8])/rho_g[i];
@@ -358,41 +398,50 @@ if RT == 'SRT':
                 u_g[1*d+i] =0;    
             }           
             if (y==0){ 
-                rho_g[i] = fin_l[0]+fin_l[1]+fin_l[3]+2*(fin_l[2]+fin_l[5]+fin_l[6]);
+                rho_l = fin_l[0]+fin_l[1]+fin_l[3]+2*(fin_l[2]+fin_l[5]+fin_l[6]);
                 u_g[0*d+i]=uLB; 
                 u_g[1*d+i] =0;
+                rho_g[i] = rho_l;
             }
             usqr = u_g[0*d+i]*u_g[0*d+i] + u_g[1*d+i]*u_g[1*d+i];
+            
             for (k=0;k<9;k=k+1){ 
                 cu = (c_g[k*2]*u_g[0*d+i] + c_g[k*2+1]*u_g[1*d+i]) ;      
-                feq_g[k*d+i] = rho_g[i]*t_g[k]*(1. + 3.0*cu + 9*0.5*cu*cu - 3.0*0.5*usqr);
+                feq_g[k*d+i] = rho_l*t_g[k]*(1. + 3.0*cu + 9*0.5*cu*cu - 3.0*0.5*usqr);
                   
                 if ( (x+c_g[k*2]>=0) and (x+c_g[k*2]<xsize) and (y-c_g[k*2+1]>=0) and (y-c_g[k*2+1]<ysize) ){
                     ftemp_g[k*d+x+c_g[k*2]+(y-c_g[k*2+1])*xsize] = fin_l[k] - omega*(fin_l[k]-feq_g[k*d+i]) ; // j-c because -ve y axis  
                 }
             }
             
-            
+     
+         
+    
         }    
         """
-    funRT = funRT % (uLB, omega)   
+    funRT = funRT % (uLB, omega, turb)   
 
 elif RT == 'TRT' :
     
     funRT = """
-        __global__ void funRT(float* fin_g, float* ftemp_g, float* feq_g, float* rho_g, float* u_g){
+        __global__ void funRT(float* fin_g, float* ftemp_g, float* feq_g, float* rho_g, float* u_g, float* taus_g){
             int x     = threadIdx.x + blockIdx.x * blockDim.x;
             int y     = threadIdx.y + blockIdx.y * blockDim.y;
-            int xsize    = blockDim.x * gridDim.x;
-            int ysize    = blockDim.y * gridDim.y;
+            int xsize    = blockDim.x * gridDim.x; int xsize_max = xsize-1;
+            int ysize    = blockDim.y * gridDim.y; int ysize_max = ysize -1;
             int d = xsize * ysize;
             int i = x + y * xsize;
             int k = 0;
             float uLB = %s;
             float omegap = %s;
             float omegam = %s;
+            int turb = %s;
+            float Csbulk = 0.16;
+            float nuLB = (1.0/(3.0*omegap)) - (1.0/6.0);
+            float visc_inv=0; float Zplus=0; float Cs=0; float Cs2 = 0.0; float tau = 1.0/omegap ;
+            float product1 =0; float product2 =0; float Qmf =0;             
             float usqr = 0.0;
-            float cu = 0.0;
+            float cu = 0.0; float rho_l =rho_g[i];
             __shared__ float t_g[9] ;
             __shared__ int c_g[18] ;
             //float t_g[9];int c_g[18];
@@ -416,13 +465,32 @@ elif RT == 'TRT' :
             c_g[0]=0;c_g[1]=0;c_g[2]=1;c_g[3]=0;c_g[4]=0;c_g[5]=1;c_g[6]=-1;c_g[7]=0;c_g[8]=0;
             c_g[9]=-1;c_g[10]=1;c_g[11]=1;c_g[12]=-1;c_g[13]=1;c_g[14]=-1;c_g[15]=-1;c_g[16]=1;c_g[17]=-1;
             
+            if (turb==1) {
             
-            //cs = 2;    
-            rho_g[i] = fin_l[0]+fin_l[1]+fin_l[2]+fin_l[3]+fin_l[4]+fin_l[5]+fin_l[6]+fin_l[7]+fin_l[8];
+                //Adding smagorinsky models
+                //Applying Van Driest damping to make Cs2 zero at walls, referenced from GLBE_Premnath_2009
+                visc_inv = sqrt( abs(u_g[int(xsize/2)]-u_g[int(xsize/2)+xsize])/(nuLB*rho_l) ) ; //viscous length scale inverse assuming dy =1
+                Zplus = min(x-0,min(xsize_max-x,min(y-0,ysize_max-y)))*visc_inv ; // closest distance to a wall
+                Cs = Csbulk*(1 - exp(-Zplus/26)) ;
+                Cs2 = Cs*Cs ;
+                Cs2 = 0.025 ; // 0.0289 , smagorinsky constant if SGS modelling is not desired
+                //Following formula is referenced from LES_LDC_Weichen_Lei_2013
+                for (k=0;k<9;k=k+1){
+                    product1 = c_g[k*2]*c_g[k*2+1]*fin_g[k*d+i] + product1; 
+                    product2 = c_g[k*2]*c_g[k*2+1]*feq_g[k*d+i] + product2;  
+                }
+                Qmf = product1 - product2 ; // momentum flux
+                tau = 0.5*(tau + sqrt( (tau*tau + ( 18*1.4142*Cs2*abs(Qmf) )/rho_g[i] ) ) ) ; // tau + tau_turbulent
+                omegap = 1.0/tau;
+                taus_g[i] = tau ;
+           
+            }  
+                        
+            rho_l = fin_l[0]+fin_l[1]+fin_l[2]+fin_l[3]+fin_l[4]+fin_l[5]+fin_l[6]+fin_l[7]+fin_l[8];
+            rho_g[i] = rho_l;
             
-            
-            u_g[0*d+i] = (c_g[0]*fin_l[0]+c_g[2]*fin_l[1]+c_g[4]*fin_l[2]+c_g[6]*fin_l[3]+c_g[8]*fin_l[4]+c_g[10]*fin_l[5]+c_g[12]*fin_l[6]+c_g[14]*fin_l[7]+c_g[16]*fin_l[8])/rho_g[i];
-            u_g[1*d+i] = (c_g[1]*fin_l[0]+c_g[3]*fin_l[1]+c_g[5]*fin_l[2]+c_g[7]*fin_l[3]+c_g[9]*fin_l[4]+c_g[11]*fin_l[5]+c_g[13]*fin_l[6]+c_g[15]*fin_l[7]+c_g[17]*fin_l[8])/rho_g[i];
+            u_g[0*d+i] = (c_g[0]*fin_l[0]+c_g[2]*fin_l[1]+c_g[4]*fin_l[2]+c_g[6]*fin_l[3]+c_g[8]*fin_l[4]+c_g[10]*fin_l[5]+c_g[12]*fin_l[6]+c_g[14]*fin_l[7]+c_g[16]*fin_l[8])/rho_l;
+            u_g[1*d+i] = (c_g[1]*fin_l[0]+c_g[3]*fin_l[1]+c_g[5]*fin_l[2]+c_g[7]*fin_l[3]+c_g[9]*fin_l[4]+c_g[11]*fin_l[5]+c_g[13]*fin_l[6]+c_g[15]*fin_l[7]+c_g[17]*fin_l[8])/rho_l;
          
             // BCs left wall, right wall, bottom wall and top wall
             if ( x == 0 or x == xsize-1 or y == ysize-1){
@@ -430,9 +498,10 @@ elif RT == 'TRT' :
                 u_g[1*d+i] =0;    
             }           
             if (y==0){ 
-                rho_g[i] = fin_l[0]+fin_l[1]+fin_l[3]+2*(fin_l[2]+fin_l[5]+fin_l[6]);
+                rho_l = fin_l[0]+fin_l[1]+fin_l[3]+2*(fin_l[2]+fin_l[5]+fin_l[6]);
                 u_g[0*d+i]=uLB; 
                 u_g[1*d+i] =0;
+                rho_g[i] = rho_l;
             }
             usqr = u_g[0*d+i]*u_g[0*d+i] + u_g[1*d+i]*u_g[1*d+i];
             
@@ -457,19 +526,18 @@ elif RT == 'TRT' :
                 }
             }
             
-            
         }    
         """
-    funRT = funRT % (uLB, omegap, omegam)  
+    funRT = funRT % (uLB, omegap, omegam, turb)  
 
 elif RT == 'MRT':
     
     funRT = """
-        __global__ void funRT(float* fin_g, float* ftemp_g, float* feq_g, float* rho_g, float* u_g){
+        __global__ void funRT(float* fin_g, float* ftemp_g, float* feq_g, float* rho_g, float* u_g, float* taus_g){
             int x     = threadIdx.x + blockIdx.x * blockDim.x;
             int y     = threadIdx.y + blockIdx.y * blockDim.y;
-            int xsize    = blockDim.x * gridDim.x;
-            int ysize    = blockDim.y * gridDim.y;
+            int xsize    = blockDim.x * gridDim.x; int xsize_max = xsize-1;
+            int ysize    = blockDim.y * gridDim.y; int ysize_max = ysize-1;
             int d = xsize * ysize;
             int i = x + y * xsize;
             int k = 0;
@@ -478,14 +546,19 @@ elif RT == 'MRT':
             float omega_e = %s;
             float omega_eps = %s;
             float omega_q = %s;
+            int turb = %s;
+            float Csbulk = 0.16;
+            float nuLB = (1.0/(3.0*omega_nu)) - (1.0/6.0);
+            float visc_inv=0; float Zplus=0; float Cs=0; float Cs2 = 0.0; float tau = 1.0/omega_nu ;
+            float product1 =0; float product2 =0; float Qmf =0;             
             float usqr = 0.0;
             float cu = 0.0;
             __shared__ float t_g[9] ;
             __shared__ int c_g[18] ;
-            float fin_l[9]={0}; // local fin to avoid multiple global memory access
+            float fin_l[9]={0};// local fin to avoid multiple global memory access
             float m_GS[9]={0}; float m_GS_eq[9]={0};
             
-            float jx=0; float jy=0; float rho_l=0; //local variables to store temporary values
+            float jx=0; float jy=0; float rho_l = rho_g[i]; //local variables to store temporary values
             fin_l[0]=fin_g[0*d+i];fin_l[1]=fin_g[1*d+i];fin_l[2]=fin_g[2*d+i];fin_l[3]=fin_g[3*d+i];fin_l[4]=fin_g[4*d+i];
             fin_l[5]=fin_g[5*d+i];fin_l[6]=fin_g[6*d+i];fin_l[7]=fin_g[7*d+i];fin_l[8]=fin_g[8*d+i];
             
@@ -494,9 +567,29 @@ elif RT == 'MRT':
             c_g[0]=0;c_g[1]=0;c_g[2]=1;c_g[3]=0;c_g[4]=0;c_g[5]=1;c_g[6]=-1;c_g[7]=0;c_g[8]=0;
             c_g[9]=-1;c_g[10]=1;c_g[11]=1;c_g[12]=-1;c_g[13]=1;c_g[14]=-1;c_g[15]=-1;c_g[16]=1;c_g[17]=-1;
             
-            //float omega_vec[9];
+            if (turb==1) {
+            
+                //Adding smagorinsky models
+                //Applying Van Driest damping to make Cs2 zero at walls, referenced from GLBE_Premnath_2009
+                visc_inv = sqrt( abs(u_g[int(xsize/2)]-u_g[int(xsize/2)+xsize])/(nuLB*rho_l) ) ; //viscous length scale inverse assuming dy =1
+                Zplus = min(x-0,min(xsize_max-x,min(y-0,ysize_max-y)))*visc_inv ; // closest distance to a wall
+                Cs = Csbulk*(1 - exp(-Zplus/26)) ;
+                Cs2 = Cs*Cs ;
+                Cs2 = 0.025 ; // 0.0289 , smagorinsky constant if SGS modelling is not desired
+                //Following formula is referenced from LES_LDC_Weichen_Lei_2013
+                for (k=0;k<9;k=k+1){
+                    product1 = c_g[k*2]*c_g[k*2+1]*fin_g[k*d+i] + product1; 
+                    product2 = c_g[k*2]*c_g[k*2+1]*feq_g[k*d+i] + product2;  
+                }
+                Qmf = product1 - product2 ; // momentum flux
+                tau = 0.5*(tau + sqrt( (tau*tau + ( 18*1.4142*Cs2*abs(Qmf) )/rho_g[i] ) ) ) ; // tau + tau_turbulent
+                omega_nu = 1.0/tau;
+                taus_g[i] = tau ;
+           
+            } 
+
             float omega_vec[] = {0.0, omega_e, omega_eps, 0.0, omega_q, 0.0, omega_q, omega_nu, omega_nu};
-            //float omega_vec[] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+
             int M_GS[] = { 1,  1,  1,  1,  1, 1,  1,  1,  1,
                           -4, -1, -1, -1, -1, 2,  2,  2,  2,
                            4, -2, -2, -2, -2, 1,  1,  1,  1,
@@ -518,23 +611,9 @@ elif RT == 'MRT':
                                 1.0/9,  1.0/18,  1.0/36, -1.0/6, -1.0/12, -1.0/6, -1.0/12, 0,     1.0/4,
                                 1.0/9,  1.0/18,  1.0/36,  1.0/6,  1.0/12, -1.0/6, -1.0/12, 0,    -1.0/4};
             
-            
-            
-            /*
-            float M_GS_INV[] =  {1.0/9,  1.0/9,   1.0/9,   1.0/9,  1.0/9,  1.0/9,  1.0/9,  1.0/9,  1.0/9,
-                                -1.0/9, -1.0/36, -1.0/36, -1.0/36,-1.0/36, 1.0/18, 1.0/18, 1.0/18, 1.0/18,
-                                 1.0/9, -1.0/18, -1.0/18, -1.0/18,-1.0/18, 1.0/36, 1.0/36, 1.0/36, 1.0/36,
-                                     0,  1.0/6,        0, -1.0/6,       0, 1.0/6, -1.0/6, -1.0/6,  1.0/6,
-                                     0, -1.0/6,        0,  1.0/6,       0, 1.0/12,-1.0/12,-1.0/12, 1.0/12,
-                                     0,      0,   1.0/6,       0, -1.0/6,  1.0/6,  1.0/6, -1.0/6, -1.0/6,
-                                     0,      0,  -1.0/6,       0,  1.0/6,  1.0/12, 1.0/12,-1.0/12,-1.0/12,
-                                     0,  1.0/4,  -1.0/4,   1.0/4, -1.0/4,       0,       0,     0,     0,
-                                     0,      0,       0,       0,       0, 1.0/4, -1.0/4,  1.0/4, -1.0/4};                    
-         
-            */
-            //cs = 2;    
-            rho_g[i] = fin_l[0]+fin_l[1]+fin_l[2]+fin_l[3]+fin_l[4]+fin_l[5]+fin_l[6]+fin_l[7]+fin_l[8];
-            rho_l = rho_g[i];
+    
+            rho_l = fin_l[0]+fin_l[1]+fin_l[2]+fin_l[3]+fin_l[4]+fin_l[5]+fin_l[6]+fin_l[7]+fin_l[8];
+            rho_g[i] = rho_l;
             
             u_g[0*d+i] = (c_g[0]*fin_l[0]+c_g[2]*fin_l[1]+c_g[4]*fin_l[2]+c_g[6]*fin_l[3]+c_g[8]*fin_l[4]+c_g[10]*fin_l[5]+c_g[12]*fin_l[6]+c_g[14]*fin_l[7]+c_g[16]*fin_l[8])/rho_l;
             u_g[1*d+i] = (c_g[1]*fin_l[0]+c_g[3]*fin_l[1]+c_g[5]*fin_l[2]+c_g[7]*fin_l[3]+c_g[9]*fin_l[4]+c_g[11]*fin_l[5]+c_g[13]*fin_l[6]+c_g[15]*fin_l[7]+c_g[17]*fin_l[8])/rho_l;
@@ -545,10 +624,10 @@ elif RT == 'MRT':
                 u_g[1*d+i] =0;    
             }           
             if (y==0){ 
-                rho_g[i] = fin_l[0]+fin_l[1]+fin_l[3]+2*(fin_l[2]+fin_l[5]+fin_l[6]);
+                rho_l = fin_l[0]+fin_l[1]+fin_l[3]+2*(fin_l[2]+fin_l[5]+fin_l[6]);
                 u_g[0*d+i]=uLB; 
                 u_g[1*d+i] =0;
-                rho_l = rho_g[i];
+                rho_g[i] = rho_l;
             }
            
             for (k=0; k<9;k=k+1){
@@ -580,16 +659,16 @@ elif RT == 'MRT':
 
         }    
         """
-    funRT = funRT % (uLB, omega_nu, omega_e, omega_eps, omega_q)
+    funRT = funRT % (uLB, omega_nu, omega_e, omega_eps, omega_q, turb)
     
 funBC = """
-    __global__ void funBC(float* ftemp_g, float* feq_g){
+    __global__ void funBC(float* ftemp_g, float* feq_g, float* fin_g){
         
         int x     = threadIdx.x + blockIdx.x * blockDim.x;
         int y     = threadIdx.y + blockIdx.y * blockDim.y;
         int xsize    = blockDim.x * gridDim.x;
         int ysize    = blockDim.y * gridDim.y;
-        int d = xsize * ysize;
+        int d = xsize * ysize; int k=0;
         int i = x + y * xsize;
              
         if (x ==0 ){
@@ -611,8 +690,11 @@ funBC = """
             ftemp_g[7*d+i] = -feq_g[5*d+i] + feq_g[7*d+i] + ftemp_g[5*d+i];
             ftemp_g[8*d+i] = -feq_g[6*d+i] + feq_g[8*d+i] + ftemp_g[6*d+i];
         } 
-
-    
+        
+        for (k=0; k<9;k=k+1){
+            fin_g[k*d+i] = ftemp_g[k*d+i];
+        }
+  
     }
     """
     
@@ -629,7 +711,7 @@ for It in range(maxIt):
 #     print(feq[1,:,:])
 
   
-    cuda.memcpy_htod(fin_g, fin)
+    #cuda.memcpy_htod(fin_g, fin)
     #cuda.memcpy_htod(fpost_g,fpost)
 #     if (RT == 'SRT'):   
 #         funSRT(fin_g,ftemp_g, feq_g, rho_g, u_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY))
@@ -639,7 +721,7 @@ for It in range(maxIt):
 #  
 #     elif (RT == 'MRT'):
 #         funMRT(fin_g,ftemp_g, feq_g, rho_g, u_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY))
-    funRT(fin_g,ftemp_g, feq_g, rho_g, u_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY)) 
+    funRT(fin_g,ftemp_g, feq_g, rho_g, u_g, taus_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY)) 
 #     cuda.memcpy_dtoh(feq,feq_g)
 #     cuda.memcpy_dtoh(u,u_g)
 # #     print('2- ' + str(np.max(feq)))
@@ -647,12 +729,12 @@ for It in range(maxIt):
 #     Gpu2(fin_g,ftemp_g, feq_g, rho_g, u_g, c_g, t_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY))
 #     cuda.memcpy_dtoh(feq,feq_g)
 #     cuda.memcpy_dtoh(t,t_g)
-    funBC(ftemp_g, feq_g, block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY))     
+    funBC(ftemp_g, feq_g, fin_g,block=(blockDimX,blockDimY,1), grid=(gridDimX,gridDimY))     
 #     print('3- ' + str(np.mean(feq)))
 #     print(t)
 #     print(feq[1,:,:])
 
-    cuda.memcpy_dtoh(fin,ftemp_g)
+    #cuda.memcpy_dtoh(fin,ftemp_g)
 #    cuda.memcpy_dtoh(fpost,fpost_g)
 
 #     print(It)
@@ -670,6 +752,7 @@ for It in range(maxIt):
     if( (It%Pinterval == 0) & (SaveVTK | SavePlot)) :
         
         u_past = u.copy()
+        cuda.memcpy_dtoh(fin,ftemp_g)
         cuda.memcpy_dtoh(rho,rho_g)
         cuda.memcpy_dtoh(u,u_g)
         rho = rho.transpose()
@@ -797,7 +880,7 @@ for It in range(maxIt):
 
         print ( 'time elapsed is ', (tend-tstart), 'seconds' )
        
-        if (abs(np.mean(u)-np.mean(u_past))/uLB < 0.0000001):
+        if (abs(np.mean(u)-np.mean(u_past))/uLB < 0.00000001):
         #if (abs(reg_val-reg_val_past) < 0.0001):
             
             count = count + 1
