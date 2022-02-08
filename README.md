@@ -1,4 +1,4 @@
 # LatBo
-lattice boltzmann method code for masters thesis. 
+lattice boltzmann method code for simulating cavity flows. 
 
 INCOMPLETE
